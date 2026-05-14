@@ -2,103 +2,162 @@
 
 ## TL;DR
 
-从 Agent Loop 出发学习 Claude Code，最稳的路线不是按目录遍历，而是沿着主循环依赖向外扩展：先理解 `query()` 如何驱动模型和工具，再学习工具协议、权限、上下文压缩、输入处理、Skills / Plugins / MCP、会话恢复、子 agent 和可观测性。这样每个主题都能回到同一条主干：模型如何看到上下文、如何行动、如何恢复、如何被约束。
+本项目采用 **frontier 式学习**：从当前机制出发完成源码精读和 `mini-cc` 最小实现，再把它牵出的“要学习、要拓展、要优化”的下一层主题写回本文件，形成可持续推进的学习队列。
 
-## Core Spine: Agent Loop
+当前已完成第一个节点 **Agent Loop**。下一步应进入 **Tool Dispatcher**，因为 Agent Loop 已经能识别 `tool_use`，但真正的 coding agent 行动能力取决于工具 schema、工具查找、执行、结果回填和并发 / 副作用安全。
 
-已完成第一轮学习：
+## 使用方式
 
-- 源码解析：`docs/wiki-source/cc/analysis/claude-code-agent-loop.md`
-- build-along 笔记：`docs/build-along/cc/01-agent-loop.md`
-- JOB-WIKI 候选 source：`docs/wiki-source/cc/raw/2026-05-14-claude-code-agent-loop.md`
-- mini-cc 第一课：`mini-cc/src/query.ts`、`mini-cc/src/QueryEngine.ts`、`mini-cc/src/Tool.ts`
+每次开始一个新机制时，只更新和当前机制相关的部分，不做全量重写。
 
-核心结论：
+1. 在 `Current Node` 记录当前学习节点状态。
+2. 在 `Frontier Queue` 写入当前节点牵出的下一层主题。
+3. 在 `Priority Queue` 调整下一步顺序。
+4. 在 `Learning Tracks` 更新相关 track 的学习问题、源码入口和 `mini-cc` 演进点。
+5. 在 `Source Index` 登记新增的 analysis / build-along / raw 文档。
 
-```text
-query() / queryLoop()
-→ callModel()
-→ assistant message
-→ tool_use
-→ runTools() / runToolUse()
-→ tool_result
-→ next State.messages
-→ next loop
-```
-
-## Traversal Model：Frontier 式学习
-
-本项目的学习方式接近广度优先遍历，但锚点来自实际学习主题，而不是先按目录做全量规划。
-
-每个主题的学习闭环是：
+## Traversal Model
 
 ```text
 选定当前机制
-→ 精读源码并实现 mini-cc 的最小版本
-→ 记录当前机制牵出的后续学习点
-→ 把“要学习 / 要拓展 / 要优化”的内容写入 frontier
-→ 下一轮从 frontier 中选择优先级最高的主题继续展开
+→ 精读 Claude Code 源码
+→ 实现 mini-cc 的最小对应能力
+→ 验证行为
+→ 记录当前机制牵出的 frontier
+→ 从 frontier 中选择下一优先级主题继续
 ```
 
-当前遍历状态：
-
-- 已完成节点：Agent Loop
-- 当前主干：`query()` / `queryLoop()` 驱动 `tool_use` / `tool_result` 闭环
-- Agent Loop 牵出的第一层 frontier：
-  - Tool Dispatcher：工具 schema、执行、结果回填和并发安全。
-  - Permission / Tool Safety：工具调用前后的安全边界。
-  - Context / Compaction：每轮模型调用前如何构造和压缩上下文。
-  - Input / Commands：用户输入进入 loop 前如何被解析和改写。
-  - Session / Resume：transcript 如何持久化和恢复。
-
-frontier 记录规则：
+frontier 分类：
 
 - `要学习`：需要继续精读 Claude Code 源码的机制。
-- `要拓展`：需要在 `mini-cc` 中补齐的能力。
+- `要拓展`：需要在 `mini-cc` 中新增的能力。
 - `要优化`：已有 `mini-cc` 能力后续要接近 Claude Code 的地方。
 
-每完成一个 frontier 主题，都要把它新牵出的下一层主题继续写回本文件。
+## Current State
 
-## Codebase Map From Agent Loop
+| 项目 | 当前状态 |
+|---|---|
+| 已完成节点 | Agent Loop |
+| 当前推荐节点 | Tool Dispatcher |
+| mini-cc 状态 | 已完成最小 agent loop，可跑 `tool_use -> tool_result -> final answer` |
+| 文档状态 | Agent Loop 已有 analysis、build-along、raw 三类文档 |
+| 下一步目标 | 补齐工具协议、工具调度和文件类工具，打开 Permission / Path Guard 后续 frontier |
 
-| 学习区域 | 关键源码 | 和 Agent Loop 的关系 | 学习价值 |
-|---|---|---|---|
-| Core Loop | `src/query.ts` | 主状态机，决定继续、停止、恢复和下一轮消息。 | 理解 Agent Harness 骨架。 |
-| Entry Wrappers | `src/QueryEngine.ts`, `src/screens/REPL.tsx` | SDK/headless 和交互式 UI 都消费同一个 `query()`。 | 学习核心 loop 与入口层解耦。 |
-| Model Adapter | `src/services/api/claude.ts`, `src/query/deps.ts` | 把模型 streaming event 规范化为内部 assistant message。 | 学习模型 API 适配边界。 |
-| Tool Protocol | `src/Tool.ts`, `src/tools.ts`, `src/tools/` | 定义工具 schema、上下文、权限、UI、结果格式。 | 学习工具面设计。 |
-| Tool Execution | `src/services/tools/toolExecution.ts`, `src/services/tools/toolOrchestration.ts`, `src/services/tools/StreamingToolExecutor.ts` | 执行 `tool_use` 并产出 `tool_result`。 | 学习工具调度、并发和副作用安全。 |
-| Permission / Hooks | `src/hooks/useCanUseTool.tsx`, `src/services/tools/toolHooks.ts`, `src/utils/permissions/` | 在工具执行前后控制是否允许、阻断、修改上下文。 | 学习生产级安全边界。 |
-| Context / Compaction | `src/services/compact/`, `src/utils/toolResultStorage.ts`, `src/query/tokenBudget.ts` | 每轮模型调用前重建和压缩 `messagesForQuery`。 | 学习长会话上下文工程。 |
-| Input Processing | `src/utils/processUserInput/`, `src/commands/`, `src/commands.ts` | 用户输入进入 `query()` 前可能被命令、附件、local command 改写。 | 学习 CLI 命令和 prompt 边界。 |
-| Skills / Attachments | `src/skills/`, `src/services/skillSearch/`, `src/utils/attachments.ts`, `src/memdir/` | 在 loop 周围动态补充知识和上下文。 | 学习按需上下文加载。 |
-| Plugins / MCP | `src/services/plugins/`, `src/services/mcp/`, `src/tools/MCPTool/` | 外部能力进入工具面。 | 学习扩展工具协议。 |
-| Session / Resume | `src/utils/sessionStorage.ts`, `src/utils/sessionRestore.ts`, `src/history.ts` | 保证 transcript、compact boundary、orphan tool_use 可恢复。 | 学习长会话可靠性。 |
-| Subagent / Swarm | `src/tools/AgentTool/`, `src/utils/swarm/`, `src/tasks/` | 子 agent 复用主 loop，但隔离上下文和任务。 | 学习多 agent 架构。 |
-| Observability | `src/utils/queryProfiler.ts`, `src/services/analytics/`, `src/utils/telemetry/`, `src/cost-tracker.ts` | 记录 loop、工具、成本、错误和延迟。 | 学习生产级诊断。 |
+## Current Node：Agent Loop
+
+### 学习问题
+
+如果要实现一个 Claude Code-like coding agent，最小主循环应该是什么？它为什么不能只是“一次模型调用 + 打印结果”？
+
+### 已确认源码事实
+
+| 源码位置 | 关键符号 | 说明 |
+|---|---|---|
+| `src/query.ts:219` | `query()` | 核心 loop 暴露为异步生成器。 |
+| `src/query.ts:241` | `queryLoop()` | 真正的 agent loop 实现。 |
+| `src/query.ts:307` | `while (true)` | 主循环是跨轮状态机。 |
+| `src/query.ts:557` | `toolUseBlocks` / `needsFollowUp` | `tool_use` 是继续下一轮的核心信号。 |
+| `src/query.ts:1382` | `runTools()` / `StreamingToolExecutor` | 工具执行从主 loop 下沉到服务层。 |
+| `src/Tool.ts:158` | `ToolUseContext` | 工具执行上下文边界。 |
+| `src/QueryEngine.ts:675` | `for await (const message of query(...))` | SDK/headless 入口复用核心 loop。 |
+
+### mini-cc 已完成范围
+
+| mini-cc 文件 | 作用 |
+|---|---|
+| `mini-cc/src/query.ts` | 最小 `query()` / `queryLoop()`。 |
+| `mini-cc/src/QueryEngine.ts` | 入口包装。 |
+| `mini-cc/src/Tool.ts` | 工具协议和 `ToolUseContext`。 |
+| `mini-cc/src/types.ts` | 消息、content block、model provider、query event 类型。 |
+| `mini-cc/src/services/api/mockClaude.ts` | 可控 mock model。 |
+| `mini-cc/src/services/tools/toolExecution.ts` | 单工具执行。 |
+| `mini-cc/src/services/tools/toolOrchestration.ts` | 最小工具调度。 |
+| `mini-cc/src/tools/BashTool.ts` | 第一个具体工具。 |
+
+### 核心闭环
+
+```text
+user prompt
+→ QueryEngine.submitMessage()
+→ query() / queryLoop()
+→ model returns assistant message with tool_use
+→ runTools() / runToolUse()
+→ concrete tool call
+→ tool_result user message
+→ next model call
+→ final assistant text
+```
+
+## Frontier Queue
+
+| 优先级 | Frontier | 类型 | 为什么由 Agent Loop 牵出 | mini-cc 影响 | 预期产物 |
+|---|---|---|---|---|---|
+| P0 | Tool Dispatcher | 要学习 / 要拓展 | Agent Loop 只识别 `tool_use`，真正行动依赖工具 schema、查找、执行、结果映射和调度。 | 增加 `read_file`、`write_file`、`edit_file`；扩展 `services/tools`。 | Lesson 02；tool dispatcher analysis / raw。 |
+| P0 | Permission / Tool Safety | 要学习 / 要优化 | 工具会读写文件和执行命令，安全边界是 coding agent 的核心约束。 | 增加 path guard、危险命令分类、allow/deny/ask。 | Lesson 03；permission hooks analysis / raw。 |
+| P0 | Context / Compaction | 要学习 / 要拓展 | 每轮 loop 都把 transcript 送回模型，长会话必须处理预算和压缩。 | 增加 token estimate、transcript、summary message。 | Lesson 05-06；context compaction raw。 |
+| P1 | Input / Commands | 要学习 / 要拓展 | `query()` 前还有 slash command、附件、memory 和本地命令处理。 | 增加 command registry、`/help`、`/clear`、`/compact`。 | input command processing analysis。 |
+| P1 | Session / Resume | 要学习 / 要优化 | transcript 是事实源，恢复必须保持 `tool_use` / `tool_result` 配对。 | 增加 conversation save/resume。 | session resume raw。 |
+| P2 | Skills / Plugins / MCP | 要学习 / 要拓展 | 外部知识和外部工具最终会进入上下文面或工具面。 | 增加 skill index、外部工具 provider。 | skills / plugin MCP raw。 |
+| P2 | Subagent / Swarm | 要学习 / 要拓展 | 子 agent 复用主 loop，但需要隔离上下文和任务。 | 增加 child loop 和 summary return。 | subagent loop raw。 |
+| P3 | Observability / Recovery | 要优化 | 生产级 loop 需要 max turns、错误恢复、stream watchdog、cost、telemetry。 | 增加 event log、trace span、latency placeholder。 | observability raw。 |
+
+## Priority Queue
+
+### P0：Agent Loop 的直接依赖
+
+1. **Tool Dispatcher**
+   - 下一课优先做。
+   - 目标是补齐 `Tool.ts`、`tools/`、`services/tools` 的机制理解和 `mini-cc` 文件工具。
+2. **Permission / Tool Safety**
+   - Tool Dispatcher 之后自然进入。
+   - 目标是理解工具调用前后的安全边界。
+3. **Context / Compaction**
+   - Agent Loop 和工具调用跑起来后，需要处理 transcript 增长。
+   - 目标是理解每轮 `messagesForQuery` 如何形成和压缩。
+
+### P1：进入模型前后的上下文面
+
+1. **Input / Slash Commands**
+2. **Attachments / Memory / Skills**
+3. **Session / Resume**
+
+### P2：扩展能力和多 agent
+
+1. **Plugins / MCP**
+2. **Subagent / Swarm**
+3. **Remote / Bridge**
+
+### P3：生产质量
+
+1. **Observability / Telemetry**
+2. **Cost Tracking**
+3. **Streaming Watchdog / Recovery**
+4. **Eval / Quality Gates**
 
 ## Learning Tracks
 
-### Track 1：Agent Loop 主干
+| Track | 学习目标 | 关键源码 | mini-cc 演进 |
+|---|---|---|---|
+| Agent Loop / Query | 理解“模型 -> 工具 -> 模型”的主状态机。 | `src/query.ts`, `src/QueryEngine.ts`, `src/screens/REPL.tsx` | 已完成最小 loop。 |
+| Tool Calling / Dispatcher | 理解工具如何从 schema 变成真实行动。 | `src/Tool.ts`, `src/tools.ts`, `src/tools/`, `src/services/tools/` | 增加文件工具和调度策略。 |
+| Permission / Hooks | 理解工具执行前后的安全和 hook 边界。 | `src/hooks/useCanUseTool.tsx`, `src/services/tools/toolHooks.ts`, `src/utils/permissions/` | 增加 path guard 和权限模型。 |
+| Context / Compaction | 理解长会话如何控制上下文预算。 | `src/services/compact/`, `src/query/tokenBudget.ts`, `src/utils/toolResultStorage.ts` | 增加 transcript 和 summary。 |
+| Input / Commands | 理解用户输入如何进入 loop。 | `src/utils/processUserInput/`, `src/commands.ts`, `src/commands/` | 增加 command registry。 |
+| Skills / Plugins / MCP | 理解外部知识和外部工具如何进入上下文 / 工具面。 | `src/skills/`, `src/services/plugins/`, `src/services/mcp/`, `src/tools/MCPTool/` | 增加 skill index 和 external provider。 |
+| Session / Subagent / Remote | 理解长会话、多 agent、远程入口如何复用主 loop。 | `src/utils/sessionStorage.ts`, `src/tools/AgentTool/`, `src/remote/`, `src/bridge/` | 增加 save/resume 和 child loop。 |
+| Observability / Quality | 理解 loop、工具、成本和错误如何被诊断。 | `src/utils/queryProfiler.ts`, `src/services/analytics/`, `src/cost-tracker.ts` | 增加 event log 和 trace span。 |
 
-目标：能讲清楚 Claude Code 如何完成一轮“模型 -> 工具 -> 模型”的闭环。
+## Next Lesson：Tool Dispatcher
 
-已完成：
+### 要回答的设计问题
 
-- `query()` / `queryLoop()`
-- `tool_use` / `tool_result`
-- `QueryEngine` / `REPL` / `Tool` / `services/tools` 的初步边界
+- 工具如何暴露给模型？
+- `tool_use.name` 如何找到具体工具？
+- 工具 input 如何校验、执行并转成 `tool_result`？
+- 多个工具调用何时并发，何时串行？
+- 工具失败如何变成模型下一轮可理解的信息？
 
-下一步补充：
-
-- `query/deps.ts` 如何绑定生产模型调用。
-- `query.ts` 中 stop hook、max turns、error recovery 的终止路径。
-
-### Track 2：Tool Calling / Dispatcher
-
-目标：理解工具如何从模型可见 schema 变成真实行动。
-
-重点源码：
+### 推荐源码入口
 
 - `src/Tool.ts`
 - `src/tools.ts`
@@ -108,232 +167,57 @@ frontier 记录规则：
 - `src/tools/FileEditTool/`
 - `src/services/tools/toolExecution.ts`
 - `src/services/tools/toolOrchestration.ts`
+- `src/services/tools/StreamingToolExecutor.ts`
 
-关键问题：
+### 预期 mini-cc 改动
 
-- 工具 schema、input parse、permission、call、result 如何串起来？
-- 什么时候并发，什么时候串行？
-- 工具失败如何变成模型可理解的结果？
+- 新增 `mini-cc/src/tools/FileReadTool.ts`
+- 新增 `mini-cc/src/tools/FileWriteTool.ts`
+- 新增 `mini-cc/src/tools/FileEditTool.ts`
+- 更新 `mini-cc/src/tools.ts`
+- 扩展 `mini-cc/src/services/tools/toolExecution.ts`
+- 扩展 `mini-cc/src/services/tools/toolOrchestration.ts`
 
-mini-cc 下一步：
+### 预期文档产物
 
-- 增加 `read_file`、`write_file`、`edit_file`。
-- 把 `runTools()` 从纯串行升级为按工具安全性分组。
+- `docs/wiki-source/cc/analysis/claude-code-tool-dispatcher.md`
+- `docs/build-along/cc/02-tool-dispatcher.md`
+- `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-tool-dispatcher.md`
 
-### Track 3：Permission / Hooks
+## Source Index
 
-目标：理解工具执行前后如何被安全边界约束。
+### 已完成
 
-重点源码：
+| 主题 | analysis | build-along | raw |
+|---|---|---|---|
+| Agent Loop | `docs/wiki-source/cc/analysis/claude-code-agent-loop.md` | `docs/build-along/cc/01-agent-loop.md` | `docs/wiki-source/cc/raw/2026-05-14-claude-code-agent-loop.md` |
 
-- `src/hooks/useCanUseTool.tsx`
-- `src/services/tools/toolHooks.ts`
-- `src/utils/permissions/`
-- `src/tools/BashTool/bashPermissions.ts`
-- `src/tools/PowerShellTool/powershellPermissions.ts`
+### 候选
 
-关键问题：
-
-- permission mode 如何影响工具？
-- dangerous command 如何识别？
-- pre/post hook 如何阻断或修改结果？
-- 用户拒绝后，模型下一轮看到什么？
-
-mini-cc 对应：
-
-- 加 workspace path guard。
-- 加危险命令分类。
-- 加 allow/deny/ask 的最小权限模型。
-
-### Track 4：Context / Compaction
-
-目标：理解长会话如何不被历史和工具结果撑爆。
-
-重点源码：
-
-- `src/services/compact/autoCompact.ts`
-- `src/services/compact/compact.ts`
-- `src/services/compact/microCompact.ts`
-- `src/utils/toolResultStorage.ts`
-- `src/query/tokenBudget.ts`
-- `src/utils/sessionStorage.ts`
-
-关键问题：
-
-- 每轮 `messagesForQuery` 如何形成？
-- tool result 如何被预算化或替换？
-- compact boundary 如何保持 resume 语义？
-- reactive compact 和 auto compact 有什么区别？
-
-mini-cc 对应：
-
-- 先做简单 token estimate。
-- 保存 transcript。
-- 用 summary message 替换旧历史。
-
-### Track 5：Input / Command / Attachment
-
-目标：理解用户输入如何变成进入模型的消息。
-
-重点源码：
-
-- `src/utils/processUserInput/processUserInput.ts`
-- `src/utils/processUserInput/processSlashCommand.tsx`
-- `src/utils/processUserInput/processTextPrompt.ts`
-- `src/commands.ts`
-- `src/commands/`
-- `src/utils/attachments.ts`
-- `src/memdir/`
-
-关键问题：
-
-- slash command 什么时候本地处理，什么时候进入模型？
-- queued command、memory、附件如何进入上下文？
-- command handler 与 agent loop 的边界在哪里？
-
-mini-cc 对应：
-
-- 加 `/help`、`/clear`、`/compact`。
-- 加简单 command registry。
-
-### Track 6：Skills / Plugins / MCP
-
-目标：理解扩展能力如何进入 agent 的工具面或上下文面。
-
-重点源码：
-
-- `src/skills/`
-- `src/services/skillSearch/`
-- `src/services/plugins/`
-- `src/services/mcp/`
-- `src/tools/MCPTool/`
-- `src/tools/SkillTool/`
-
-关键问题：
-
-- Skill 是上下文、工具，还是两者结合？
-- Skill discovery 如何避免一次性塞满上下文？
-- MCP 工具如何 normalize 并进入 `ToolUseContext.options.tools`？
-
-mini-cc 对应：
-
-- 加 skill index。
-- 加按需读取 `SKILL.md`。
-- 加 external tool provider 接口。
-
-### Track 7：Session / Subagent / Remote
-
-目标：理解长会话、多 agent 和远程会话如何复用主循环。
-
-重点源码：
-
-- `src/utils/sessionStorage.ts`
-- `src/utils/sessionRestore.ts`
-- `src/history.ts`
-- `src/tools/AgentTool/`
-- `src/utils/swarm/`
-- `src/remote/`
-- `src/bridge/`
-
-关键问题：
-
-- transcript 如何保证 `tool_use` / `tool_result` 配对？
-- 子 agent 如何复用 `query()` 但隔离上下文？
-- remote / bridge 如何把事件送回 UI 或外部入口？
-
-mini-cc 对应：
-
-- 加 conversation save/resume。
-- 加 child loop，返回 summary。
-
-### Track 8：Observability / Quality
-
-目标：理解生产级 agent harness 如何诊断和持续改进。
-
-重点源码：
-
-- `src/utils/queryProfiler.ts`
-- `src/services/analytics/`
-- `src/utils/telemetry/`
-- `src/cost-tracker.ts`
-- `src/services/api/claude.ts`
-
-关键问题：
-
-- 每轮 query 如何打点？
-- 工具调用、stream stall、cost、usage 如何记录？
-- 哪些错误是用户可见，哪些是 telemetry？
-
-mini-cc 对应：
-
-- 加 event log。
-- 加 trace span。
-- 加 tool call latency 和 cost placeholder。
-
-## Priority Queue
-
-### P0：Agent Loop 的直接依赖
-
-1. **Tool Dispatcher**
-   - 因为没有工具协议，就无法理解 agent loop 的“行动”。
-   - 下一课优先做。
-2. **Permission / Tool Safety**
-   - 因为 coding agent 的工具会写文件、跑 shell，权限是 harness 核心。
-3. **Context / Compaction**
-   - 因为真实 Claude Code 的 loop 每轮都围绕上下文预算运转。
-
-### P1：进入模型前后的上下文面
-
-1. **Input / Slash Commands**
-   - 理解用户输入什么时候进入模型，什么时候本地处理。
-2. **Attachments / Memory / Skills**
-   - 理解知识如何按需注入，而不是全塞 system prompt。
-3. **Session / Resume**
-   - 理解长会话如何持久化和恢复。
-
-### P2：扩展能力和多 agent
-
-1. **Plugins / MCP**
-   - 理解外部工具如何进入工具面。
-2. **Subagent / Swarm**
-   - 理解多 agent 如何复用主 loop。
-3. **Remote / Bridge**
-   - 理解非本地 UI 的会话和事件通道。
-
-### P3：生产质量
-
-1. **Observability / Telemetry**
-2. **Cost Tracking**
-3. **Streaming Watchdog / Recovery**
-4. **Eval / Quality Gates**
-
-## Recommended Study Order
-
-1. Agent Loop：已完成第一轮。
-2. Tool Dispatcher：补齐 `Tool.ts`、`tools/`、`services/tools`。
-3. Permission / Hooks：补齐工具安全边界。
-4. Context / Compaction：补齐长会话核心能力。
-5. Input / Commands：补齐进入 loop 前的用户输入处理。
-6. Skills / Attachments：补齐按需知识加载。
-7. Session / Resume：补齐持久化和恢复。
-8. Plugins / MCP：补齐外部工具扩展。
-9. Subagent / Swarm：补齐多 agent。
-10. Observability / Cost：补齐生产诊断。
+- `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-tool-dispatcher.md`
+- `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-tool-permission-hooks.md`
+- `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-context-compaction-flow.md`
+- `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-input-command-processing.md`
+- `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-skills-loading.md`
+- `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-plugin-mcp-tool-surface.md`
+- `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-session-resume.md`
+- `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-subagent-loop.md`
+- `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-observability.md`
 
 ## Candidate JOB-WIKI Mapping
 
-- project candidate: project-cc
+- project candidate: `project-cc`
 - entry candidates:
   - Agent Harness
   - Agent Loop
-  - Agent工具调用与协议
+  - Agent 工具调用与协议
   - 工具权限模型
   - 上下文工程
   - 多轮对话上下文压缩
   - Agent Skills
   - MCP 工具集成
-  - AI Coding会话管理
-  - Agent可观测性
+  - AI Coding 会话管理
+  - Agent 可观测性
 - question candidates:
   - Agent loop 的最小协议是什么？
   - Claude Code 如何执行工具并回填结果？
@@ -344,19 +228,6 @@ mini-cc 对应：
   - 权限拒绝后模型如何继续？
   - 上下文过长时如何压缩且不破坏工具历史？
   - 多 agent 如何共享主循环但隔离上下文？
-
-## Source Candidates
-
-- `raw/2026-05-14-claude-code-agent-loop.md`：已完成候选草稿。
-- `2026-05-14-claude-code-tool-dispatcher.md`
-- `2026-05-14-claude-code-tool-permission-hooks.md`
-- `2026-05-14-claude-code-context-compaction-flow.md`
-- `2026-05-14-claude-code-input-command-processing.md`
-- `2026-05-14-claude-code-skills-loading.md`
-- `2026-05-14-claude-code-plugin-mcp-tool-surface.md`
-- `2026-05-14-claude-code-session-resume.md`
-- `2026-05-14-claude-code-subagent-loop.md`
-- `2026-05-14-claude-code-observability.md`
 
 ## Open Questions
 
