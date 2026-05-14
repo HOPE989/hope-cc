@@ -13,6 +13,10 @@ This is not a general code explanation skill. Its job is to produce reliable mec
 
 ## Workflow
 
+0. **Confirm onboarding**
+   - Before a mechanism deep dive, check that `docs/wiki-source/cc/00-learning-map.md` exists or has been intentionally updated for this mechanism.
+   - If it is missing, or if the requested mechanism is not placed in the learning route and priority queue, hand off to `cc-onboarding` first.
+
 1. **Define the mechanism**
    - Name the feature precisely, such as `上下文压缩`, `工具调用权限判定`, `Skill 加载`, `MCP 插件加载`, `Slash Command 处理`.
    - State what behavior is in scope and out of scope.

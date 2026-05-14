@@ -51,12 +51,13 @@ docs/wiki-source/cc/raw/
 
 For each topic:
 
-1. Pick one Claude Code mechanism.
+0. Check or update `docs/wiki-source/cc/00-learning-map.md` with `cc-onboarding`.
+1. Pick one Claude Code mechanism and state its priority and adjacent topics.
 2. Use `cc-code-explorer` to inspect the real source.
 3. Define a minimal learning version.
-4. Implement or update the simplified project only after the user has approved the architecture/location.
+4. Implement or update the simplified project only after the architecture/location is already established or the user has approved a new one.
 5. Run a small verification command.
-6. Write a short lesson note.
+6. Write a lesson note that explains how the source facts became implementation decisions.
 7. If useful, hand off to `cc-job-wiki-source` for an ingest-ready raw project document.
 
 ## Curriculum
