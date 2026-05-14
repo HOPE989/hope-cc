@@ -51,7 +51,7 @@ docs/wiki-source/cc/raw/
 
 For each topic:
 
-0. Check or update `docs/wiki-source/cc/00-learning-map.md` with `cc-onboarding`.
+0. Use `cc-onboarding` to place the current mechanism in `docs/wiki-source/cc/00-learning-map.md` from this mechanism outward.
 1. Pick one Claude Code mechanism and state its priority and adjacent topics.
 2. Use `cc-code-explorer` to inspect the real source.
 3. Define a minimal learning version.

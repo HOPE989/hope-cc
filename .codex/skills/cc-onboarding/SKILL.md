@@ -24,20 +24,23 @@ Do not write directly into `JOB-WIKI/raw` unless the user explicitly asks. Treat
 3. Connect each subsystem to candidate JOB-WIKI semantic directions. Do not assume this session can see or verify existing `JOB-WIKI/wiki` pages. Use names as ingest suggestions only.
 4. Produce a learning map or update an existing one under the local workspace, not under JOB-WIKI raw by default.
 
-## Mandatory Trigger Before Mechanism Study
+## Mechanism-Anchored Onboarding
 
 Use this skill as a prerequisite whenever the user asks to start learning from a concrete Claude Code mechanism, such as `agent loop`, `tool dispatcher`, `context compaction`, `permissions`, `skills`, `plugins`, `MCP`, `slash commands`, or `subagent`.
 
-Do not jump directly into `cc-code-explorer` or `cc-build-along` until the learning map has been checked or updated.
+The onboarding must be anchored to the mechanism the user named. Do not pause the learning flow to create a detached full-codebase plan first.
+
+Do not jump directly into `cc-code-explorer` or `cc-build-along` until the requested mechanism has been placed in the learning route and priority queue.
 
 For an existing learning map, a lightweight update is enough:
 
+- Treat the requested mechanism as the anchor.
 - Confirm where the requested mechanism sits in the overall learning route.
 - Confirm its priority, such as P0/P1/P2.
 - List adjacent topics that should be learned before or after it.
 - State the expected outputs for this learning turn: `analysis`, `build-along`, `raw`, and/or `mini-cc` implementation.
 
-For a missing learning map, create `docs/wiki-source/cc/00-learning-map.md` before the mechanism deep dive.
+For a missing learning map, create `docs/wiki-source/cc/00-learning-map.md` from the requested mechanism outward, not as an exhaustive upfront survey.
 
 ## Recommended Output
 
