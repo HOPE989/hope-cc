@@ -5,6 +5,7 @@ import type { Tool, ToolUseContext } from "../Tool.ts";
 const execAsync = promisify(exec);
 
 function isDangerous(command: string): boolean {
+  //L01-S24 拦截危险命令：BashTool 先放最小危险命令拦截，后续 Permission 课程会把安全边界独立成模块。
   const dangerousPatterns = [
     "rm -rf /",
     "sudo ",
@@ -30,6 +31,7 @@ export const BashTool: Tool = {
     return false;
   },
   async call(input: Record<string, unknown>, context: ToolUseContext): Promise<string> {
+    //L01-S25 执行具体工具：具体工具只接收 tool input 和 ToolUseContext，不接触 queryLoop 的消息状态。
     const command = String(input.command ?? "");
     if (!command.trim()) {
       return "Error: empty command";

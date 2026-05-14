@@ -1,5 +1,6 @@
 export type Role = "user" | "assistant";
 
+//L01-S06 定义消息块：ContentBlock 是 agent loop 的最小消息协议，保留 text、tool_use、tool_result 三类核心块。
 export type TextBlock = {
   type: "text";
   text: string;
@@ -50,6 +51,7 @@ export type ModelProvider = {
   createMessage(request: ModelRequest): Promise<ModelResponse>;
 };
 
+//L01-S07 定义事件流：QueryEvent 模拟 Claude Code 的 AsyncGenerator 事件流，让 UI/SDK 层能消费 assistant、tool_result 和 done。
 export type QueryEvent =
   | { type: "assistant"; message: Message }
   | { type: "tool_result"; message: Message }

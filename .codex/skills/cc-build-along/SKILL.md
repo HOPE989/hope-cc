@@ -7,13 +7,18 @@ description: Guide the user through building a small Claude Code-like coding age
 
 Use this skill to teach Claude Code by building a small, runnable Claude Code-like project step by step.
 
+## Project Rule Boundary
+
+`AGENTS.md` is the source of truth for global project rules, output contracts, annotation format, and JOB-WIKI write boundaries. This skill only describes the build-along execution flow.
+
 ## Goal
 
-Every lesson should have three outputs:
+Each lesson usually works across these output surfaces, but the exact required outputs must follow the current request and `AGENTS.md`:
 
 1. **Source reading**: what the real Claude Code source appears to do.
 2. **Mini implementation**: a smaller version we write ourselves.
-3. **JOB-WIKI source notes**: what this teaches as `cc` practice material.
+3. **Build-along notes**: how source facts become `mini-cc` implementation choices.
+4. **JOB-WIKI source notes**: only when the lesson is mature enough or the user asks for raw-source packaging.
 
 Do not try to fully clone Claude Code. The point is to learn harness mechanisms by rebuilding their core shape.
 
@@ -109,6 +114,14 @@ For each topic:
 - Files changed:
 - Behavior:
 
+## Annotated Code Walkthrough
+按代码中的 `//L<两位课程序号>-S<两位步骤号> 步骤标题：具体注释内容` 顺序组织。每一项必须包含：
+- step:
+- file:
+- mini-cc behavior:
+- Claude Code source mechanism:
+- why this simplification is kept / omitted:
+
 ## Implementation Steps
 按实际实现顺序记录：
 1. 先创建 / 修改 ...
@@ -147,5 +160,6 @@ A lesson is complete only when:
 - The relevant source path has been inspected.
 - The lesson note explains how source facts became mini-cc design decisions.
 - The mini implementation is runnable or clearly marked as design-only.
+- If `mini-cc` changed, the code has `Lxx-Sxx` annotations and the lesson note includes `Annotated Code Walkthrough`.
 - The lesson note explains the gap between the simplified project and real Claude Code.
 - The candidate JOB-WIKI mapping is included without assuming access to existing wiki pages.

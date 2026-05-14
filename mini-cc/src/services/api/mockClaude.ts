@@ -31,6 +31,7 @@ function chooseCommand(prompt: string): string {
 export class MockClaudeProvider implements ModelProvider {
   async createMessage({ messages }: Parameters<ModelProvider["createMessage"]>[0]) {
     const toolResults = latestToolResults(messages);
+    //L01-S19 结束工具循环：mock provider 看到 tool_result 后停止调用工具，用来验证 tool_use -> tool_result -> final answer 闭环。
     if (toolResults.length > 0) {
       const content: ContentBlock[] = [
         {
@@ -42,6 +43,7 @@ export class MockClaudeProvider implements ModelProvider {
     }
 
     const prompt = latestUserText(messages);
+    //L01-S20 生成工具请求：第一轮没有工具结果时，mock provider 主动生成 tool_use，模拟真实模型向 harness 请求工具。
     const content: ContentBlock[] = [
       {
         type: "text",

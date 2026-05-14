@@ -1,31 +1,22 @@
-# Claude Code：Agent Loop 主循环机制
+# Claude Code Agent Loop 主循环机制
 
 ## TL;DR
 
-我通过精读 `src/query.ts`、`src/QueryEngine.ts`、`src/screens/REPL.tsx`、`src/Tool.ts` 和 `src/services/tools/`，复原了 Claude Code agent loop 的核心设计：它不是一次模型调用，而是一个以 transcript 为事实源的异步状态机，通过 `tool_use` / `tool_result` 协议驱动“模型输出 -> 工具执行 -> 结果回填 -> 下一轮模型调用”。基于这条源码链路，我实现了 `mini-cc` 第一课，把入口层、核心 loop、模型 provider、工具协议、工具调度和具体工具拆开，为后续学习权限、上下文压缩、session resume 打下架构基础。
+我通过精读 Claude Code 的 `src/query.ts`、`src/QueryEngine.ts`、`src/screens/REPL.tsx`、`src/Tool.ts` 和 `src/services/tools/`，复原了 Agent Loop 的核心设计：它不是一次模型调用，而是一个以 transcript 为事实源的异步状态机，通过 `tool_use` / `tool_result` 协议驱动“模型输出 -> 工具执行 -> 结果回填 -> 下一轮模型调用”。
 
-## Why This Matters
-
-Agent 产品的难点不只是“把 prompt 发给模型”，而是给模型提供一个稳定的执行环境。Claude Code 的 agent loop 展示了一个生产级 Agent Harness 如何把模型、工具、上下文、权限、错误恢复和 UI/SDK 事件组织成同一条主状态机。
-
-对我的 `cc` 实践项目来说，这个主题是所有后续能力的地基：
-
-- 没有 agent loop，就没有工具调用闭环。
-- 没有 transcript 协议，就没有 session resume 和上下文压缩。
-- 没有工具执行边界，就很难加入权限、hook、并发安全。
-- 没有入口层和核心 loop 解耦，就很难同时支持 CLI、SDK、测试和后续 UI。
+基于这条源码链路，我完成了 `mini-cc` 第一课，保留入口包装、核心 loop、模型 provider、工具协议、工具调度和具体工具边界，并用 `L01-S01` 到 `L01-S25` 的代码注释形成可复盘学习路径。
 
 ## Learning Question
 
 这次学习最初要解决的问题是：如果我要渐进式实现一个 Claude Code-like coding agent，第一步应该写什么？
 
-一个过于简单的答案是：
+过于简单的答案是：
 
 ```text
 用户输入 -> 调模型 -> 如果模型说要执行命令，就执行命令 -> 打印结果
 ```
 
-但这个答案解释不了 Claude Code 为什么要有 `query.ts`、`QueryEngine.ts`、`Tool.ts`、`services/tools` 这些边界。真正的问题应该拆成：
+但这个答案解释不了 Claude Code 为什么要有 `query.ts`、`QueryEngine.ts`、`Tool.ts`、`services/tools` 这些边界。真正的问题应该是：
 
 - Claude Code 的核心 loop 在哪里？
 - 这个 loop 如何判断下一轮是否继续？
@@ -41,26 +32,38 @@ Agent 产品的难点不只是“把 prompt 发给模型”，而是给模型提
 1. 搜索 `query`、`queryLoop`、`while (true)`，定位到 `src/query.ts`。
 2. 在 `src/query.ts:219` 看到 `query()` 是异步生成器入口，在 `src/query.ts:241` 看到 `queryLoop()` 是核心实现。
 3. 在 `src/query.ts:307` 看到显式 `while (true)`，确认它是跨轮状态机。
-4. 搜索谁消费 `query()`，在 `src/QueryEngine.ts:675` 看到 SDK/headless 入口用 `for await` 消费 query 事件，在 `src/screens/REPL.tsx:2392` 看到 REPL 构造 `ToolUseContext`。
-5. 继续追 `tool_use`，在 `src/query.ts:557` 看到 `toolUseBlocks` 和 `needsFollowUp`，在 `src/query.ts:833` 附近看到 assistant message 中的 `tool_use` 被收集。
+4. 搜索谁消费 `query()`，在 `src/QueryEngine.ts:675` 看到 SDK/headless 入口用 `for await` 消费 query 事件，在 `src/screens/REPL.tsx:2793` 看到 REPL 也进入 `query()`。
+5. 继续追 `tool_use`，在 `src/query.ts:557` 看到 `toolUseBlocks` 和 `needsFollowUp`。
 6. 继续追工具执行，在 `src/query.ts:1382` 看到进入 `runTools()` 或 `StreamingToolExecutor`，在 `src/services/tools/toolOrchestration.ts:19` 看到工具调度层。
 7. 最后回到 `src/Tool.ts:158` 看 `ToolUseContext`，确认工具不是裸函数，而是运行在会话上下文里。
 
-这条路径让我确认：Agent Loop 的中心不是 Bash 工具，也不是 REPL，而是 `query.ts` 维护的消息状态机。
+## Discovery Log
+
+1. `query()` 是 `AsyncGenerator`。这说明 Claude Code 需要持续输出中间事件，而不是只返回最终答案。
+2. `queryLoop()` 里有 `while (true)`。这说明 agent 的一次用户请求可能包含多轮模型调用。
+3. `toolUseBlocks` 和 `needsFollowUp` 决定是否继续。继续条件来自 transcript 中的结构化工具请求。
+4. 工具执行进入 `runTools()` / `StreamingToolExecutor`。主 loop 不负责具体工具细节。
+5. `ToolUseContext` 把工具调用和 cwd、权限、会话状态、MCP、abort 等运行上下文连接起来。
+6. `QueryEngine` 和 `REPL` 都消费 `query()`。交互形态和 agent 状态推进被拆开。
+
+这些发现把第一课设计从“写一个脚本”推到了“搭一个可演进的 harness 骨架”。
 
 ## Study Scope
 
-- 覆盖范围：
-  - `query()` / `queryLoop()` 主状态机。
-  - `tool_use` / `tool_result` 协议。
-  - REPL / SDK 与核心 loop 的关系。
-  - 工具执行边界。
-  - `mini-cc` 第一课的架构推导。
-- 不覆盖范围：
-  - 上下文压缩算法。
-  - permission / hook 完整链路。
-  - `StreamingToolExecutor` 的完整并发模型。
-  - Claude Code 所有工具内部实现。
+覆盖范围：
+
+- `query()` / `queryLoop()` 主状态机。
+- `tool_use` / `tool_result` 协议。
+- REPL / SDK / headless 与核心 loop 的关系。
+- 工具执行边界。
+- `mini-cc` 第一课的架构推导和注释驱动实现。
+
+不覆盖范围：
+
+- 上下文压缩算法。
+- permission / hook 完整链路。
+- `StreamingToolExecutor` 的完整并发模型。
+- Claude Code 所有工具内部实现。
 
 ## Source Evidence
 
@@ -70,23 +73,11 @@ Agent 产品的难点不只是“把 prompt 发给模型”，而是给模型提
 | `src/query.ts:241` | `queryLoop()` | 真正的 agent loop 实现。 |
 | `src/query.ts:307` | `while (true)` | 主循环是显式状态机。 |
 | `src/query.ts:557` | `toolUseBlocks` / `needsFollowUp` | 真实 `tool_use` 是继续下一轮的核心信号。 |
-| `src/query.ts:833` | 收集 `msgToolUseBlocks` | assistant message 中的工具请求会被 harness 接管。 |
 | `src/query.ts:1382` | `runTools()` / `StreamingToolExecutor` | 工具执行从主 loop 下沉到工具服务层。 |
 | `src/QueryEngine.ts:675` | `for await (const message of query(...))` | SDK/headless 入口复用核心 loop。 |
-| `src/screens/REPL.tsx:2392` | `getToolUseContext()` | REPL 构造工具运行上下文。 |
+| `src/screens/REPL.tsx:2793` | `for await (const event of query(...))` | REPL 入口复用核心 loop。 |
 | `src/Tool.ts:158` | `ToolUseContext` | 工具执行依赖会话上下文。 |
 | `src/services/tools/toolOrchestration.ts:19` | `runTools()` | 工具调度有独立边界。 |
-
-## Discovery Log
-
-1. 先发现 `query()` 是 `AsyncGenerator`。这说明 Claude Code 需要持续输出中间事件，而不是只返回最终答案。
-2. 再发现 `queryLoop()` 里的 `while (true)`。这说明 agent 的一次用户请求可能包含多轮模型调用。
-3. 接着发现 `toolUseBlocks` 和 `needsFollowUp`。这说明是否继续不是靠“模型说完了没有”，而是看 transcript 中是否出现结构化工具请求。
-4. 然后发现工具执行进入 `runTools()` / `StreamingToolExecutor`。这说明主 loop 不负责具体工具细节。
-5. 再发现 `ToolUseContext`。这说明工具调用不是孤立函数调用，而是和 cwd、权限、abort、MCP、UI 状态等上下文绑定。
-6. 最后发现 `QueryEngine` 和 `REPL` 都从外层消费 `query()`。这说明 Claude Code 把“交互形态”和“agent 状态推进”分开了。
-
-这些发现把第一课设计从“写一个脚本”推到了“搭一个可演进的 harness 骨架”。
 
 ## Design Reconstruction
 
@@ -127,8 +118,6 @@ Claude Code 的设计可以从三个核心压力推导出来。
 - `src/services/tools/`：工具调度和执行。
 - `src/tools/`：具体工具实现。
 
-这个分层给 `mini-cc` 的启发是：即使第一课很小，也不能把所有逻辑塞进 `main.ts`。要保留能继续生长的边界。
-
 ## Key Data Structures
 
 - `State`：跨轮状态，保存 messages、turn count、恢复状态、压缩状态等。
@@ -147,43 +136,38 @@ Claude Code 的设计可以从三个核心压力推导出来。
 
 ## Build-Along Derivation
 
-基于上面的源码事实，我把 `mini-cc` 第一课拆成这些文件：
+基于源码事实，我把 `mini-cc` 第一课拆成这些文件：
 
 | mini-cc 文件 | 对应 Claude Code 边界 | 学习目的 |
 |---|---|---|
+| `mini-cc/src/main.ts` | CLI / headless 入口 | 提供最小可运行入口。 |
+| `mini-cc/src/QueryEngine.ts` | `src/QueryEngine.ts` / REPL query 入口 | 保留入口包装层。 |
 | `mini-cc/src/query.ts` | `src/query.ts` | 实现最小主循环。 |
-| `mini-cc/src/QueryEngine.ts` | `src/QueryEngine.ts` | 保留入口包装层。 |
+| `mini-cc/src/types.ts` | 消息和事件协议 | 明确 `tool_use` / `tool_result`。 |
 | `mini-cc/src/Tool.ts` | `src/Tool.ts` | 定义工具协议和上下文。 |
-| `mini-cc/src/services/api/mockClaude.ts` | `src/services/api/claude.ts` | 隔离模型 provider。 |
-| `mini-cc/src/services/tools/toolOrchestration.ts` | `src/services/tools/toolOrchestration.ts` | 保留工具调度层。 |
-| `mini-cc/src/services/tools/toolExecution.ts` | `src/services/tools/toolExecution.ts` | 保留单工具执行层。 |
+| `mini-cc/src/services/api/mockClaude.ts` | 模型 provider | 隔离模型调用，便于测试。 |
+| `mini-cc/src/services/tools/toolOrchestration.ts` | 工具调度层 | 保留后续并发和安全分组位置。 |
+| `mini-cc/src/services/tools/toolExecution.ts` | 单工具执行层 | 保留工具查找和结果映射边界。 |
 | `mini-cc/src/tools/BashTool.ts` | `src/tools/` | 放具体工具实现。 |
 
-我保留的能力：
+## Annotated Code Walkthrough
 
-- `query()` / `queryLoop()`。
-- `messages` 作为事实源。
-- `tool_use` / `tool_result` 协议。
-- `ToolUseContext`。
-- provider / tool execution / orchestration 边界。
+第一课代码注释从 `L01-S01` 到 `L01-S25`，完整 walkthrough 见 `docs/build-along/cc/01-agent-loop.md`。这里保留可摄入摘要：
 
-我暂时省略的复杂度：
-
-- 真实模型和 streaming。
-- permission / hook。
-- context compaction。
-- parallel tool execution。
-- session persistence。
-
-这些省略是为了让第一课聚焦主循环，但不破坏后续演进路线。
+| 阶段 | 注释范围 | 学习重点 |
+|---|---|---|
+| 启动与入口包装 | `L01-S01` 到 `L01-S05` | 用户输入如何进入 `QueryEngine`，入口层如何消费 `query()` 事件。 |
+| 协议与工具边界 | `L01-S06` 到 `L01-S10` | `text`、`tool_use`、`tool_result`、`ToolUseContext` 和工具注册表。 |
+| Agent Loop 主状态机 | `L01-S11` 到 `L01-S18` | `query()` / `queryLoop()`、messages、max turns、工具调度和结果回填。 |
+| Mock Model 与工具执行 | `L01-S19` 到 `L01-S25` | mock provider 如何触发工具请求，工具如何查找、执行、映射为 `tool_result`。 |
 
 ## What I Practiced
 
-- 我从 `src/query.ts` 定位 Claude Code 主 loop。
-- 我追踪了 REPL 和 SDK 如何复用 `query()`。
-- 我追踪了 `tool_use` 如何进入 `runTools()`。
-- 我把源码中的架构边界映射到 `mini-cc`。
-- 我实现并验证了最小闭环：`prompt -> tool_use -> bash -> tool_result -> final answer`。
+- 从 `src/query.ts` 定位 Claude Code 主 loop。
+- 追踪 REPL 和 SDK/headless 如何复用 `query()`。
+- 追踪 `tool_use` 如何进入 `runTools()`。
+- 把源码中的架构边界映射到 `mini-cc`。
+- 实现并验证最小闭环：`prompt -> tool_use -> bash -> tool_result -> final answer`。
 
 ## Difference From Claude Code
 
@@ -200,30 +184,20 @@ Claude Code 的设计可以从三个核心压力推导出来。
 - 如果具体工具逻辑写进 `query.ts`，后续权限和并发会污染主 loop。
 - 如果入口层和 loop 耦合，SDK、REPL 和测试无法复用同一机制。
 
-## Transfer to My Agent Projects
+## Candidate JOB-WIKI Mapping
 
-这套设计可以迁移到我的其他 Agent 项目：
-
-- 把 agent 主循环作为独立 harness，而不是 UI 事件处理器。
-- 把模型调用封装成 provider，方便 mock、替换模型和测试。
-- 把工具抽象成协议对象，统一 `name`、`input_schema`、`call()` 和上下文。
-- 把工具调度放到独立服务层，后续再加入权限和并发控制。
-- 把所有跨轮事实写回 transcript，避免用隐藏变量维护关键状态。
-
-## Interview Assets
-
-- 候选能力方向：
-  - Agent Harness 主循环设计。
-  - 工具调用协议和 transcript 一致性。
-  - AI Coding 工具执行架构。
-  - 异步事件流与 UI/SDK 解耦。
-  - 生产级 Agent 的错误恢复边界。
-- 候选项目页：`project-cc`
-- 候选问题页：
+- project candidate: `project-cc`
+- entry candidates:
+  - Agent Harness
+  - Agent Loop
+  - Agent 工具调用协议
+  - AI Coding 会话管理
+- question candidates:
   - Agent loop 的最小协议是什么？
   - 为什么 `tool_use` / `tool_result` 是 Agent Harness 的核心？
   - 如何设计可扩展的工具执行层？
-- 候选场景页：
+  - UI / SDK 如何复用同一个 agent loop？
+- scenario candidates:
   - 工具执行失败后的 transcript 恢复。
   - 多工具调用的顺序和副作用安全。
   - UI / SDK 复用同一个 agent loop。
