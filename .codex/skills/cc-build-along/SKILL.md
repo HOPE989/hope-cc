@@ -44,7 +44,7 @@ docs/build-along/cc/
 - After the layout is approved, put JOB-WIKI-ready source drafts under:
 
 ```text
-docs/wiki-source/cc/
+docs/wiki-source/cc/raw/
 ```
 
 ## Lesson Loop
@@ -91,12 +91,27 @@ For each topic:
 # Lesson <NN>: <机制名>
 
 ## What We Read
+- Learning question:
 - Real source paths:
-- Key observations:
+- Reading path:
+- Key discoveries:
+
+## Source-To-Design Derivation
+说明如何从 Claude Code 源码事实推导出 mini-cc 的设计：
+- Claude Code 的模块边界：
+- mini-cc 保留的边界：
+- mini-cc 暂时省略的复杂度：
+- 这样取舍的原因：
 
 ## What We Built
 - Files changed:
 - Behavior:
+
+## Implementation Steps
+按实际实现顺序记录：
+1. 先创建 / 修改 ...
+2. 再连接 ...
+3. 最后验证 ...
 
 ## How To Run
 ```powershell
@@ -106,6 +121,11 @@ For each topic:
 ## What This Teaches
 - Harness pattern:
 - Trade-off:
+
+## Architecture Evolution
+- 本课之前：
+- 本课之后：
+- 下一课应该补：
 
 ## Difference From Claude Code
 - Simplified:
@@ -123,6 +143,7 @@ For each topic:
 A lesson is complete only when:
 
 - The relevant source path has been inspected.
+- The lesson note explains how source facts became mini-cc design decisions.
 - The mini implementation is runnable or clearly marked as design-only.
 - The lesson note explains the gap between the simplified project and real Claude Code.
 - The candidate JOB-WIKI mapping is included without assuming access to existing wiki pages.

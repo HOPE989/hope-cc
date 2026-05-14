@@ -10,7 +10,7 @@
 
 - 源码解析：`docs/wiki-source/cc/analysis/claude-code-agent-loop.md`
 - build-along 笔记：`docs/build-along/cc/01-agent-loop.md`
-- JOB-WIKI 候选 source：`docs/wiki-source/cc/2026-05-14-claude-code-agent-loop.md`
+- JOB-WIKI 候选 source：`docs/wiki-source/cc/raw/2026-05-14-claude-code-agent-loop.md`
 - mini-cc 第一课：`mini-cc/src/query.ts`、`mini-cc/src/QueryEngine.ts`、`mini-cc/src/Tool.ts`
 
 核心结论：
@@ -314,7 +314,7 @@ mini-cc 对应：
 
 ## Source Candidates
 
-- `2026-05-14-claude-code-agent-loop.md`：已完成候选草稿。
+- `raw/2026-05-14-claude-code-agent-loop.md`：已完成候选草稿。
 - `2026-05-14-claude-code-tool-dispatcher.md`
 - `2026-05-14-claude-code-tool-permission-hooks.md`
 - `2026-05-14-claude-code-context-compaction-flow.md`

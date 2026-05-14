@@ -39,6 +39,8 @@ This is not a general code explanation skill. Its job is to produce reliable mec
 docs/wiki-source/cc/analysis/<topic-slug>.md
 ```
 
+The analysis artifact must preserve the discovery process. It is not enough to present the final call chain.
+
 ## Analysis Template
 
 ```markdown
@@ -47,17 +49,38 @@ docs/wiki-source/cc/analysis/<topic-slug>.md
 ## TL;DR
 用 2-4 句话说明这个机制是什么、为什么对 Agent Harness 有价值。
 
+## Learning Question
+这次精读要回答什么设计问题？例如：Claude Code 为什么需要显式 agent loop，而不是一次性模型调用？
+
 ## Scope
 - 本文覆盖：
 - 本文不覆盖：
+
+## Reading Path
+按实际探索顺序说明：
+1. 先搜索了哪些关键词 / 符号。
+2. 为什么选中这些入口文件。
+3. 哪些路径被排除，为什么。
 
 ## Source Entry Points
 | 入口 | 文件 | 符号 / 线索 | 作用 |
 |---|---|---|---|
 
+## Discovery Log
+按发现顺序记录源码事实：
+1. 在 `src/...` 发现 ...
+2. 由此继续追到 `src/...`
+3. 这一步说明 ...
+
 ## Core Call Chain
 1. `file.ts:function`：...
 2. `file.ts:function`：...
+
+## Design Reconstruction
+从源码事实推导架构设计：
+- 这个机制为什么需要这些模块边界？
+- 状态为什么这样传递？
+- 哪些复杂度被隔离到了下游层？
 
 ## Key Data Structures
 说明核心类型、字段、状态枚举、配置项。

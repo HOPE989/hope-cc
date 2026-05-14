@@ -90,24 +90,66 @@ mini-cc/
 
 ## 6. 文档产出规则
 
+文档不是结论摘要，而是学习和设计过程的可复盘记录。读者看完后应该能知道：
+
+- 我们最初面对的设计问题是什么。
+- 为什么从这些源码入口开始读。
+- 读源码时一步步发现了哪些事实。
+- 这些事实如何推导出 Claude Code 的功能和架构。
+- 我们如何把这个理解转化成 `mini-cc` 的简化设计。
+- 简化实现和 Claude Code 的差距在哪里，后续为什么要补这些能力。
+
 文档分三类：
 
 ```text
-learning notes      # 学习过程材料，服务于理解
-build-along notes   # 边学边写记录，服务于实践复盘
-wiki-source docs    # JOB-WIKI raw source 候选文档，服务于 ingest
+docs/wiki-source/cc/analysis/   # 源码分析过程稿，服务于理解
+docs/build-along/cc/            # 边学边写记录，服务于实践复盘
+docs/wiki-source/cc/raw/        # JOB-WIKI raw source 候选文档，服务于 ingest
 ```
 
-JOB-WIKI raw source 候选文档必须比普通学习笔记更结构化，建议包含：
+三类文档都必须写出“来龙去脉”，但侧重点不同：
+
+- `analysis`：记录源码探索路线。必须包含问题定义、搜索路径、入口选择理由、调用链发现过程、源码事实、推断和待验证事项。
+- `build-along`：记录架构仿写路线。必须包含从 Claude Code 源码事实到 `mini-cc` 模块设计的推导、文件放置理由、实现步骤、验证结果和后续演进点。
+- `raw`：记录可被 JOB-WIKI ingest 的完整实践材料。必须在结构化摘要之外保留学习叙事、设计推导、工程取舍、实践动作和候选映射。
+
+禁止只写“是什么”和“结论是什么”。每份机制文档至少要回答这些问题：
+
+```markdown
+## Learning Question
+这次学习要解决什么设计问题？
+
+## Reading Path
+为什么从这些文件读起？中途如何缩小范围？
+
+## Discovery Log
+按发现顺序记录关键源码事实，而不是只给最终调用链。
+
+## Design Reconstruction
+从源码事实推导 Claude Code 为什么这样拆模块、这样传状态、这样处理边界。
+
+## Build-Along Derivation
+说明 mini-cc 应该保留哪些边界、删掉哪些复杂度、为什么。
+
+## Verification
+记录运行命令、观察结果、仍未验证的部分。
+```
+
+JOB-WIKI raw source 候选文档必须比普通学习笔记更结构化，并包含：
 
 ```markdown
 ## TL;DR
+## Learning Question
+## Reading Path
+## Discovery Log
 ## Study Scope
 ## Source Evidence
+## Design Reconstruction
 ## Mechanism Walkthrough
 ## Architecture Notes
 ## Key Data Structures
 ## Design Decisions & Trade-offs
+## Build-Along Derivation
 ## What I Practiced
 ## Difference From Claude Code
 ## Candidate JOB-WIKI Mapping
@@ -117,6 +159,8 @@ JOB-WIKI raw source 候选文档必须比普通学习笔记更结构化，建议
 
 ## 7. JOB-WIKI 对接规则
 
+- 本仓库内的 JOB-WIKI ingest 候选文档统一放在 `docs/wiki-source/cc/raw/`。
+- `docs/wiki-source/cc/analysis/` 只放源码分析过程稿，不作为 ingest 候选。
 - 目标 raw 路径是 `C:\dev\workspace\h0pe\JOB-WIKI\raw\Projects\cc\`。
 - 只有用户明确要求归档或复制到 JOB-WIKI 时，才写入该路径。
 - 写入 `JOB-WIKI/raw` 后，该文件视为不可变 raw source。

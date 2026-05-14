@@ -56,6 +56,13 @@ Use this structure:
 ## Priority Queue
 按 P0/P1/P2 列出下一批值得精读的机制。
 
+## Learning Narrative Plan
+说明每个高优先级主题应该怎样学：
+- 要回答的设计问题
+- 推荐阅读入口
+- 预期产出的 analysis / build-along / raw 文档
+- mini-cc 可能演进的模块
+
 ## Candidate JOB-WIKI Mapping
 列出后续 ingest 时可能更新的 project / entry / question / scenario 方向。只作为候选映射，不要求与现有 wiki 页面完全一致。
 
