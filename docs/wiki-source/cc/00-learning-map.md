@@ -9,7 +9,7 @@
 - 已完成节点：`Agent Loop`
 - 当前推荐节点：`Tool Dispatcher`
 - `mini-cc` 状态：已完成第一课最小 agent loop，可跑 `tool_use -> tool_result -> final answer`
-- 文档状态：Agent Loop 已有 analysis、build-along、raw 三类文档
+- 文档状态：Agent Loop 已有 analysis、build-along 和 raw 候选文档；后续主题 raw 仍只在用户明确要求时生成
 
 ## 使用方式
 
@@ -29,7 +29,8 @@
 -> 在 mini-cc 中实现最小对应能力
 -> 用 Lxx-Sxx 注释形成阅读路径
 -> 验证行为
--> 沉淀 analysis / build-along / raw
+-> 沉淀 analysis / build-along
+-> 用户明确要求时再生成 raw
 -> 回写 frontier
 ```
 
@@ -67,20 +68,19 @@ frontier 分类：
 
 - `docs/wiki-source/cc/analysis/claude-code-agent-loop.md`
 - `docs/build-along/cc/01-agent-loop.md`
-- `docs/wiki-source/cc/raw/2026-05-14-claude-code-agent-loop.md`
 
 ## Frontier Queue
 
 | 优先级 | Frontier | 类型 | 为什么由 Agent Loop 牵出 | mini-cc 影响 | 预期产物 |
 |---|---|---|---|---|---|
-| P0 | Tool Dispatcher | 要学习 / 要拓展 | Agent Loop 已能识别 `tool_use`，但真正行动依赖工具 schema、查找、执行、结果映射和调度。 | 增加 `read_file`、`write_file`、`edit_file`，扩展 `services/tools`。 | Lesson 02；analysis；可选 raw。 |
+| P0 | Tool Dispatcher | 要学习 / 要拓展 | Agent Loop 已能识别 `tool_use`，但真正行动依赖工具 schema、查找、执行、结果映射和调度。 | 增加 `read_file`、`write_file`、`edit_file`，扩展 `services/tools`。 | Lesson 02；analysis；raw 仅用户要求时生成。 |
 | P0 | Permission / Tool Safety | 要学习 / 要优化 | 工具会读写文件和执行命令，安全边界是 coding agent 的核心约束。 | 增加 path guard、危险命令分类、allow/deny/ask。 | Lesson 03；permission hooks analysis。 |
-| P0 | Context / Compaction | 要学习 / 要拓展 | 每轮 loop 都把 transcript 送回模型，长会话必须处理预算和压缩。 | 增加 token estimate、transcript、summary message。 | Lesson 04/05；context compaction raw。 |
+| P0 | Context / Compaction | 要学习 / 要拓展 | 每轮 loop 都把 transcript 送回模型，长会话必须处理预算和压缩。 | 增加 token estimate、transcript、summary message。 | Lesson 04/05；analysis；raw 仅用户要求时生成。 |
 | P1 | Input / Slash Commands | 要学习 / 要拓展 | `query()` 前还有 slash command、附件、memory 和本地命令处理。 | 增加 command registry、`/help`、`/clear`、`/compact`。 | input command analysis。 |
-| P1 | Session / Resume | 要学习 / 要优化 | transcript 是事实源，恢复必须保持 `tool_use` / `tool_result` 配对。 | 增加 conversation save/resume。 | session resume raw。 |
-| P2 | Skills / Plugins / MCP | 要学习 / 要拓展 | 外部知识和外部工具最终会进入上下文面或工具面。 | 增加 skill index、external tool provider。 | skills/plugin/MCP raw。 |
-| P2 | Subagent / Swarm | 要学习 / 要拓展 | 子 agent 复用主 loop，但需要隔离上下文和任务。 | 增加 child loop 和 summary return。 | subagent loop raw。 |
-| P3 | Observability / Recovery | 要优化 | 生产级 loop 需要 max turns、错误恢复、stream watchdog、cost、telemetry。 | 增加 event log、trace span、latency placeholder。 | observability raw。 |
+| P1 | Session / Resume | 要学习 / 要优化 | transcript 是事实源，恢复必须保持 `tool_use` / `tool_result` 配对。 | 增加 conversation save/resume。 | analysis；raw 仅用户要求时生成。 |
+| P2 | Skills / Plugins / MCP | 要学习 / 要拓展 | 外部知识和外部工具最终会进入上下文面或工具面。 | 增加 skill index、external tool provider。 | analysis；raw 仅用户要求时生成。 |
+| P2 | Subagent / Swarm | 要学习 / 要拓展 | 子 agent 复用主 loop，但需要隔离上下文和任务。 | 增加 child loop 和 summary return。 | analysis；raw 仅用户要求时生成。 |
+| P3 | Observability / Recovery | 要优化 | 生产级 loop 需要 max turns、错误恢复、stream watchdog、cost、telemetry。 | 增加 event log、trace span、latency placeholder。 | analysis；raw 仅用户要求时生成。 |
 
 ## Priority Queue
 
@@ -166,7 +166,7 @@ frontier 分类：
 | 主题 | 状态 | analysis | build-along | raw |
 |---|---|---|---|---|
 | Agent Loop | 完成 | `docs/wiki-source/cc/analysis/claude-code-agent-loop.md` | `docs/build-along/cc/01-agent-loop.md` | `docs/wiki-source/cc/raw/2026-05-14-claude-code-agent-loop.md` |
-| Tool Dispatcher | 待开始 | `docs/wiki-source/cc/analysis/claude-code-tool-dispatcher.md` | `docs/build-along/cc/02-tool-dispatcher.md` | `docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-tool-dispatcher.md` |
+| Tool Dispatcher | 待开始 | `docs/wiki-source/cc/analysis/claude-code-tool-dispatcher.md` | `docs/build-along/cc/02-tool-dispatcher.md` | 仅用户明确要求时生成 |
 
 ## Candidate JOB-WIKI Mapping
 
