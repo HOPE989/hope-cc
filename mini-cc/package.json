@@ -1,0 +1,8 @@
+{
+  "name": "mini-cc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lesson:01": "node --experimental-strip-types src/main.ts"
+  }
+}
