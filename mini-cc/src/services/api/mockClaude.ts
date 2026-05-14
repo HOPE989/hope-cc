@@ -29,6 +29,12 @@ function chooseCommand(prompt: string): string {
 }
 
 export class MockClaudeProvider implements ModelProvider {
+
+  /**
+   * createMessage是mock的llm生成结果
+   * @param param0.messages 当前的对话消息列表，包含用户消息、模型消息和工具结果消息
+   * @returns
+   */
   async createMessage({ messages }: Parameters<ModelProvider["createMessage"]>[0]) {
     const toolResults = latestToolResults(messages);
     //L01-S19 结束工具循环：mock provider 看到 tool_result 后停止调用工具，用来验证 tool_use -> tool_result -> final answer 闭环。

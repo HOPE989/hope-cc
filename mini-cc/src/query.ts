@@ -92,6 +92,7 @@ async function* queryLoop(params: QueryParams): AsyncGenerator<QueryEvent> {
       console.log(`[tool:${toolUses[i].name}] ${JSON.stringify(toolUses[i].input)} -> ${toolResults[i].content.slice(0, 200)}`);
     }
 
+    // 注意，anthropic将工具结果作为 user message 
     const toolResultMessage: Message = { role: "user", content: toolResults };
     state.messages.push(toolResultMessage);
     //L01-S18 回填工具结果：tool_result 作为 user message 回填 transcript，下一轮模型才能基于工具结果继续推理。
