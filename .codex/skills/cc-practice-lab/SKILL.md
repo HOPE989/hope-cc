@@ -1,95 +1,64 @@
 ---
 name: cc-practice-lab
-description: Run safe experiments against the Claude Code source project in hope-cc to validate learning. Use when the user wants to verify how a cc mechanism behaves, run tests, add temporary instrumentation, compare hypotheses, debug a flow, or produce experiment evidence for JOB-WIKI raw/Projects/cc source documents.
+description: Run focused experiments against hope-cc or mini-cc to verify uncertain Claude Code mechanism behavior. Use when source reading leaves a hypothesis unresolved, tests need to be run, temporary instrumentation is needed, or analysis needs empirical evidence.
 ---
 
 # CC Practice Lab
 
-Use this skill when source reading is not enough and a behavior needs empirical verification.
+Use this skill when reading source is not enough and behavior needs evidence.
 
-## Principle
+## Boundary
 
-Experiments must be small, reversible, and documented. The output is evidence for the user's `cc` practice project, not a production change unless the user explicitly asks.
+Experiments support `analysis`. They are not raw generation and not production changes unless the user explicitly asks.
 
 ## Workflow
 
 1. **State the hypothesis**
-   - Example: `compact` should preserve recent user/tool context but summarize older messages.
-   - Mark expected observations before running commands.
+   - Write what should happen before running commands.
+   - Tie it to a source question.
 
-2. **Find the narrowest test surface**
+2. **Pick the smallest test surface**
    - Prefer existing tests, small scripts, CLI flags, or isolated functions.
-   - Avoid broad app startup unless needed.
+   - Avoid full app startup unless necessary.
 
-3. **Check worktree state**
+3. **Check worktree**
    - Run `git status --short`.
-   - Do not revert unrelated user changes.
+   - Do not revert unrelated changes.
 
-4. **Add temporary instrumentation only when needed**
-   - Use minimal logs or focused assertions.
-   - Keep a cleanup note.
-   - Do not leave noisy instrumentation unless it becomes part of an intentional patch.
+4. **Instrument only if needed**
+   - Keep temporary logs minimal.
+   - Record cleanup requirements.
+   - Remove instrumentation unless the user wants to keep it.
 
-5. **Run and record**
-   - Capture command, observed output, and interpretation.
-   - Distinguish confirmed behavior from failed setup.
+5. **Run and interpret**
+   - Record command, output summary, and what it confirms or disproves.
+   - Do not over-interpret setup failures.
 
-6. **Package findings**
-   - Write local experiment notes under the approved documentation location:
+6. **Feed evidence back**
+   - Update the relevant analysis document or create an experiment note under:
 
 ```text
-docs/wiki-source/cc/experiments/<topic-slug>.md
+docs/wiki-source/cc/experiments/
 ```
 
-## Experiment Template
+## Experiment Note Shape
 
 ```markdown
 # Experiment: <主题>
 
 ## Hypothesis
-我预计...
-
 ## Source Context
-- 相关源码：
-- 相关配置：
-
 ## Setup
-- 环境：
-- 命令：
-
 ## Steps
-1. ...
-
 ## Observations
-| 步骤 | 观察 | 证据 |
-|---|---|---|
-
 ## Result
-- confirmed / disproved / inconclusive
-
-## Impact on Understanding
-这个实验如何修正源码理解。
-
-## JOB-WIKI Value
-可支撑的候选 project / entry / question / scenario 方向：
-- project: cc
-- entry candidates:
-- question candidates:
-- scenario candidates:
-
+## Impact on Analysis
 ## Cleanup
-- 已清理：
-- 仍需处理：
 ```
 
 ## Safety Rules
 
-- Do not run destructive commands such as `git reset --hard` or broad deletion.
-- Do not modify `JOB-WIKI/raw` from an experiment.
-- If temporary edits are made, clearly report them and clean them up unless the user wants to keep them.
-- If tests fail because of environment setup, say so directly and do not over-interpret.
-
-## Handoff
-
-Use `cc-code-explorer` when experiment results reveal a new call chain to inspect.
-Use `cc-job-wiki-source` when the experiment should become part of a raw project document.
+- Do not run destructive commands.
+- Do not modify `JOB-WIKI/raw`.
+- Do not create `docs/wiki-source/cc/raw/` unless the user explicitly asks for raw / JOB-WIKI source / ingest packaging.
+- If temporary edits are made, report them and clean them up unless kept intentionally.

@@ -1,131 +1,93 @@
 ---
 name: cc-code-explorer
-description: Trace and explain Claude Code source mechanisms in hope-cc. Use when the user asks how a cc feature works, wants a full call chain, wants source-level analysis of context compaction, tool calling, permissions, skills, plugins, CLI commands, bridge sessions, UI flow, telemetry, or any mechanism that should later become a JOB-WIKI raw/Projects/cc document.
+description: Trace and explain one Claude Code source mechanism in hope-cc, then create or update an analysis document. Use when the user asks how a cc feature works, wants a call chain, source-level analysis, or wants to deepen an existing analysis note.
 ---
 
 # CC Code Explorer
 
-Use this skill for source-grounded deep dives into Claude Code mechanisms.
+Use this skill to read real Claude Code source and maintain `docs/wiki-source/cc/analysis/`.
 
-## Scope
+## Boundary
 
-This is not a general code explanation skill. Its job is to produce reliable mechanism analysis for the `cc` practice project, then hand off to `cc-job-wiki-source` when the analysis is ready to become a source document.
+`AGENTS.md` owns product rules. This skill only executes source exploration.
+
+Default output is `analysis`. Do not generate raw or invoke `cc-job-wiki-source` unless the user explicitly asks for raw / JOB-WIKI source / ingest packaging.
 
 ## Workflow
 
-0. **Confirm mechanism-anchored onboarding**
-   - Before a mechanism deep dive, check that the requested mechanism has been placed in `docs/wiki-source/cc/00-learning-map.md` with priority and adjacent frontier topics.
-   - If it is missing, hand off to `cc-onboarding` to update the map from this mechanism outward, then return to the deep dive.
+1. **Anchor the mechanism**
+   - Name the mechanism precisely.
+   - State what is in scope and out of scope.
+   - Check `docs/wiki-source/cc/00-learning-map.md`; if needed, update only the current frontier.
 
-1. **Define the mechanism**
-   - Name the feature precisely, such as `上下文压缩`, `工具调用权限判定`, `Skill 加载`, `MCP 插件加载`, `Slash Command 处理`.
-   - State what behavior is in scope and out of scope.
+2. **Find source entry points**
+   - Use `rg` for function names, event names, type names, command names, config keys, and protocol fields.
+   - Prefer concrete files and symbols over folder-level guesses.
+   - Read enough surrounding code to understand why an entry point is credible.
 
-2. **Find entry points**
-   - Use `rg` to search user-facing command names, type names, config keys, function names, and event names.
-   - Read nearby tests or schemas when available.
-   - Identify at least one concrete entry file and one downstream core implementation file.
+3. **Trace the mechanism**
+   - Follow control flow until it reaches state mutation, model interaction, tool execution, persistence, UI rendering, permission check, or other side-effect boundary.
+   - Capture data structures, state transitions, error paths, and safety boundaries.
+   - Preserve the actual reading path, including why certain paths were chosen or excluded.
 
-3. **Trace the call chain**
-   - Follow control flow until the behavior reaches its state mutation, external call, model interaction, or rendered output.
-   - Capture important data structures and type boundaries.
-   - Note error paths, permission checks, caching, persistence, and telemetry if present.
+4. **Separate certainty**
+   - Mark `源码确认` for code-backed facts.
+   - Mark `合理推断` for conclusions inferred from structure.
+   - Mark `待验证` for runtime behavior or incomplete source paths.
 
-4. **Separate fact from inference**
-   - `源码确认`：directly supported by code.
-   - `合理推断`：likely intent inferred from naming or structure.
-   - `待验证`：requires runtime test, hidden config, or missing context.
-
-5. **Produce an analysis artifact**
-   - Use the approved documentation location:
+5. **Write or update analysis**
+   - Location:
 
 ```text
 docs/wiki-source/cc/analysis/<topic-slug>.md
 ```
 
-The analysis artifact must preserve the discovery process. It is not enough to present the final call chain.
-After the deep dive, update the learning map with any new frontier topics discovered from this mechanism.
+   - Write it as a reader-facing lesson plan, not an internal work log:
+     - problem first
+     - minimal mental model
+     - working mechanism
+     - source path and evidence
+     - design reconstruction
+     - what this means for mini-cc
+     - open questions
+   - Do not turn analysis into a raw source package.
 
-## Analysis Template
+6. **Update frontier**
+   - Add only frontier topics discovered from the current mechanism.
+   - Do not prefill future raw paths.
+
+## Analysis Shape
+
+A useful analysis usually contains:
 
 ```markdown
-# Claude Code：<机制名> 源码解析
-
-## TL;DR
-用 2-4 句话说明这个机制是什么、为什么对 Agent Harness 有价值。
+# Claude Code <机制> 源码分析
 
 ## Learning Question
-这次精读要回答什么设计问题？例如：Claude Code 为什么需要显式 agent loop，而不是一次性模型调用？
-
 ## Scope
-- 本文覆盖：
-- 本文不覆盖：
-
+## 解决方案 / Mental Model
+## 工作原理 / Execution Flow
 ## Reading Path
-按实际探索顺序说明：
-1. 先搜索了哪些关键词 / 符号。
-2. 为什么选中这些入口文件。
-3. 哪些路径被排除，为什么。
-
-## Source Entry Points
-| 入口 | 文件 | 符号 / 线索 | 作用 |
-|---|---|---|---|
-
 ## Discovery Log
-按发现顺序记录源码事实：
-1. 在 `src/...` 发现 ...
-2. 由此继续追到 `src/...`
-3. 这一步说明 ...
-
-## Core Call Chain
-1. `file.ts:function`：...
-2. `file.ts:function`：...
-
+## Source Evidence
 ## Design Reconstruction
-从源码事实推导架构设计：
-- 这个机制为什么需要这些模块边界？
-- 状态为什么这样传递？
-- 哪些复杂度被隔离到了下游层？
-
 ## Key Data Structures
-说明核心类型、字段、状态枚举、配置项。
-
-## Execution Flow
-按实际调用顺序解释流程。
-
 ## Error / Edge Paths
-记录失败、取消、权限拒绝、降级、重试、压缩遗漏等路径。
-
-## Design Takeaways
-提炼可迁移到个人 Agent 项目的工程模式。
-
-## Interview Value
-说明它可能支撑哪些候选面试能力方向、项目深挖或场景题。不要假设当前会话能看到 JOB-WIKI 现有词条。
-
-## Evidence
-- `src/...`：说明证据
-
-## Open Questions
-- 待验证问题
+## Build-Along Derivation
+## Verification
+## 待验证
 ```
 
-## Standards
+If `mini-cc` was not changed, say so instead of inventing an annotated walkthrough.
 
-- Include concrete file paths for every important claim.
-- Avoid long code dumps; quote only small snippets when necessary.
-- Prefer call-chain tables and state diagrams over prose when flow is complex.
-- If runtime behavior is unclear, hand off to `cc-practice-lab`.
-- If the document is ready for JOB-WIKI, hand off to `cc-job-wiki-source`.
+## Quality Rules
 
-## Mermaid
-
-Use Mermaid for non-trivial flows:
-
-```mermaid
-sequenceDiagram
-  participant User
-  participant CLI
-  participant Runtime
-  User->>CLI: command / prompt
-  CLI->>Runtime: normalized request
-```
+- Treat analysis as a teaching document for a future reader.
+- Start with why the mechanism matters and a simple mental model before source tables.
+- Make the reading path easy to follow; do not dump findings in the order commands happened if that hurts understanding.
+- Every important claim needs a source path.
+- Keep long code dumps out; quote only small shapes or protocols.
+- Prefer diagrams and short snippets when flow is complex.
+- Put user follow-up clarifications back into analysis when they improve the mechanism, for example `message / content block / chunk` boundaries.
+- Avoid two bad extremes: source-free tutorials and unreadable evidence piles.
+- If behavior cannot be confirmed from code, use `cc-practice-lab`.
