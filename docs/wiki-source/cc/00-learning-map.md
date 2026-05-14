@@ -26,6 +26,39 @@ query() / queryLoop()
 → next loop
 ```
 
+## Traversal Model：Frontier 式学习
+
+本项目的学习方式接近广度优先遍历，但锚点来自实际学习主题，而不是先按目录做全量规划。
+
+每个主题的学习闭环是：
+
+```text
+选定当前机制
+→ 精读源码并实现 mini-cc 的最小版本
+→ 记录当前机制牵出的后续学习点
+→ 把“要学习 / 要拓展 / 要优化”的内容写入 frontier
+→ 下一轮从 frontier 中选择优先级最高的主题继续展开
+```
+
+当前遍历状态：
+
+- 已完成节点：Agent Loop
+- 当前主干：`query()` / `queryLoop()` 驱动 `tool_use` / `tool_result` 闭环
+- Agent Loop 牵出的第一层 frontier：
+  - Tool Dispatcher：工具 schema、执行、结果回填和并发安全。
+  - Permission / Tool Safety：工具调用前后的安全边界。
+  - Context / Compaction：每轮模型调用前如何构造和压缩上下文。
+  - Input / Commands：用户输入进入 loop 前如何被解析和改写。
+  - Session / Resume：transcript 如何持久化和恢复。
+
+frontier 记录规则：
+
+- `要学习`：需要继续精读 Claude Code 源码的机制。
+- `要拓展`：需要在 `mini-cc` 中补齐的能力。
+- `要优化`：已有 `mini-cc` 能力后续要接近 Claude Code 的地方。
+
+每完成一个 frontier 主题，都要把它新牵出的下一层主题继续写回本文件。
+
 ## Codebase Map From Agent Loop
 
 | 学习区域 | 关键源码 | 和 Agent Loop 的关系 | 学习价值 |

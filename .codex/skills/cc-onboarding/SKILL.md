@@ -24,11 +24,11 @@ Do not write directly into `JOB-WIKI/raw` unless the user explicitly asks. Treat
 3. Connect each subsystem to candidate JOB-WIKI semantic directions. Do not assume this session can see or verify existing `JOB-WIKI/wiki` pages. Use names as ingest suggestions only.
 4. Produce a learning map or update an existing one under the local workspace, not under JOB-WIKI raw by default.
 
-## Mechanism-Anchored Onboarding
+## Mechanism-Anchored Frontier Learning
 
 Use this skill as a prerequisite whenever the user asks to start learning from a concrete Claude Code mechanism, such as `agent loop`, `tool dispatcher`, `context compaction`, `permissions`, `skills`, `plugins`, `MCP`, `slash commands`, or `subagent`.
 
-The onboarding must be anchored to the mechanism the user named. Do not pause the learning flow to create a detached full-codebase plan first.
+The onboarding must be anchored to the mechanism the user named. Use the mechanism as the current node, then update the learning map with the next frontier nodes it reveals. Do not pause the learning flow to create a detached full-codebase plan first.
 
 Do not jump directly into `cc-code-explorer` or `cc-build-along` until the requested mechanism has been placed in the learning route and priority queue.
 
@@ -37,7 +37,8 @@ For an existing learning map, a lightweight update is enough:
 - Treat the requested mechanism as the anchor.
 - Confirm where the requested mechanism sits in the overall learning route.
 - Confirm its priority, such as P0/P1/P2.
-- List adjacent topics that should be learned before or after it.
+- List adjacent frontier topics that should be learned, expanded, or optimized next.
+- Preserve why each frontier topic was discovered from the current mechanism.
 - State the expected outputs for this learning turn: `analysis`, `build-along`, `raw`, and/or `mini-cc` implementation.
 
 For a missing learning map, create `docs/wiki-source/cc/00-learning-map.md` from the requested mechanism outward, not as an exhaustive upfront survey.
@@ -73,6 +74,13 @@ Use this structure:
 
 ## Priority Queue
 按 P0/P1/P2 列出下一批值得精读的机制。
+
+## Frontier Queue
+按“当前机制 -> 牵出的下一层主题”维护学习队列：
+- 已完成节点：
+- 当前节点：
+- 新发现 frontier：
+- 对 mini-cc 的学习 / 拓展 / 优化影响：
 
 ## Learning Narrative Plan
 说明每个高优先级主题应该怎样学：
