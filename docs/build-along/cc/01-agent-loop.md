@@ -15,6 +15,17 @@ main.ts -> mock model -> if tool then exec -> print
 ## What We Read
 
 - Real source paths:
+  - `src/entrypoints/cli.tsx:33`：轻量 CLI bootstrap，先处理 fast path。
+  - `src/entrypoints/cli.tsx:295`：普通路径动态导入完整 CLI。
+  - `src/main.tsx:968`：Commander 根命令声明默认交互模式和 `-p/--print`。
+  - `src/main.tsx:2584`：`--print` 非交互模式进入 headless 分支。
+  - `src/main.tsx:3798`：普通交互模式调用 `launchRepl()`。
+  - `src/replLauncher.tsx:12`：渲染 `<App><REPL /></App>`。
+  - `src/screens/REPL.tsx:3142`：用户提交入口 `onSubmit`。
+  - `src/screens/REPL.tsx:3490`：`onSubmit` 调用 `handlePromptSubmit()`。
+  - `src/utils/handlePromptSubmit.ts:560`：输入处理后调用 `onQuery()`。
+  - `src/screens/REPL.tsx:2793`：REPL 的 `onQuery` 进入 `query()`。
+  - `src/cli/print.ts:2147`：headless 模式通过 `ask()` 进入 loop。
   - `src/query.ts:219`：`query()` 暴露核心异步生成器。
   - `src/query.ts:241`：`queryLoop()` 是真实主循环。
   - `src/query.ts:307`：显式 `while (true)` 表示跨轮状态机。
@@ -24,11 +35,14 @@ main.ts -> mock model -> if tool then exec -> print
   - `src/Tool.ts:158`：`ToolUseContext` 是工具运行上下文边界。
   - `src/services/tools/toolOrchestration.ts:19`：`runTools()` 是工具调度层。
 - Reading path:
-  1. 先找 `query()` 和 `queryLoop()`，确认核心 loop 在哪里。
-  2. 再找谁调用 `query()`，确认 REPL 和 SDK 都复用它。
-  3. 再找 `tool_use` 如何被收集，确认 loop 继续条件。
-  4. 再找 `runTools()`，确认工具执行不属于主 loop 内部细节。
+  1. 先找启动入口，确认 `entrypoints/cli.tsx` 只是 bootstrap，完整 CLI 在 `main.tsx`。
+  2. 再找模式分流，确认普通交互模式渲染 `REPL`，`-p/--print` 模式走 `runHeadless()`。
+  3. 再追用户提交，确认 `PromptInput -> REPL.onSubmit -> handlePromptSubmit -> onQuery -> query()`。
+  4. 再找 `query()` 和 `queryLoop()`，确认核心 loop 在哪里。
+  5. 再找 `tool_use` 如何被收集，确认 loop 继续条件。
+  6. 再找 `runTools()`，确认工具执行不属于主 loop 内部细节。
 - Key discoveries:
+  - Claude Code 有两层入口：CLI / UI 入口只负责启动、模式分流、输入规范化；agent loop 从 `query()` 才真正开始。
   - Claude Code 的 loop 是事件流，不是最终字符串返回。
   - `messages` 是事实源，`tool_use` 和 `tool_result` 是跨轮协议。
   - 工具执行层独立，是后续权限、并发、hook 的挂载点。
@@ -39,6 +53,8 @@ Claude Code 的模块边界给第一课提供了直接设计约束：
 
 | Claude Code 边界 | mini-cc 对应 | 保留原因 |
 |---|---|---|
+| `src/entrypoints/cli.tsx` / `src/main.tsx` | `mini-cc/src/main.ts` | 第一课只保留最小 CLI，但要知道真实 Claude Code 在这里完成启动和模式分流。 |
+| `src/screens/REPL.tsx` / `src/utils/handlePromptSubmit.ts` | `mini-cc/src/QueryEngine.ts` | mini-cc 暂时没有 TUI，所以用 QueryEngine 代表“输入进入 loop 前的入口包装”。 |
 | `src/query.ts` | `mini-cc/src/query.ts` | 主 loop 必须独立，后续才能加 compaction、max turns、恢复路径。 |
 | `src/QueryEngine.ts` | `mini-cc/src/QueryEngine.ts` | 入口包装不能和 loop 混在一起，后续才能支持 CLI / SDK / tests。 |
 | `src/Tool.ts` | `mini-cc/src/Tool.ts` | 工具需要统一协议和上下文，不应该是裸函数。 |
@@ -58,9 +74,10 @@ Claude Code 的模块边界给第一课提供了直接设计约束：
 
 ## What We Built
 
+- `mini-cc/src/main.ts`：最小 CLI 启动入口。它没有复刻 Claude Code 的 Commander / REPL，只负责接收 prompt 并创建 `QueryEngine`。
+- `mini-cc/src/QueryEngine.ts`：在本课中承担简化版入口包装，等价于把真实 Claude Code 的 `REPL.onSubmit` / headless `ask()` 压缩成一个可测试入口。
 - `mini-cc/src/types.ts`：定义 `Message`、`ContentBlock`、`ToolUseBlock`、`ToolResultBlock`、`ModelProvider`、`QueryEvent`。
 - `mini-cc/src/query.ts`：实现 `query()` / `queryLoop()`，维护 `messages` 和 `turnCount`。
-- `mini-cc/src/QueryEngine.ts`：包装入口，用 `for await` 消费 query 事件。
 - `mini-cc/src/Tool.ts`：定义 `Tool` 和 `ToolUseContext`。
 - `mini-cc/src/services/api/mockClaude.ts`：模拟模型第一次输出 `tool_use`，第二次看到 `tool_result` 后结束。
 - `mini-cc/src/services/tools/toolOrchestration.ts`：实现串行 `runTools()`。

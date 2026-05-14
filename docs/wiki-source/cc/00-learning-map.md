@@ -53,6 +53,14 @@ frontier 分类：
 
 | 源码位置 | 关键符号 | 说明 |
 |---|---|---|
+| `src/entrypoints/cli.tsx:33` | `main()` | CLI bootstrap 先处理 version、MCP、bridge、daemon 等 fast path。 |
+| `src/entrypoints/cli.tsx:295` | `await import('../main.js')` | 普通路径进入完整 Commander CLI。 |
+| `src/main.tsx:968` | `program.name('claude')` | 根命令声明默认交互模式和 `-p/--print` 非交互模式。 |
+| `src/main.tsx:2584` | `--print mode` | 非交互模式进入 headless 分支。 |
+| `src/main.tsx:3798` | `launchRepl(...)` | 普通交互模式渲染 REPL。 |
+| `src/screens/REPL.tsx:3142` | `onSubmit` | 用户输入提交入口。 |
+| `src/utils/handlePromptSubmit.ts:560` | `onQuery(...)` | 输入处理后触发查询。 |
+| `src/screens/REPL.tsx:2793` | `for await (const event of query(...))` | REPL 进入核心 agent loop。 |
 | `src/query.ts:219` | `query()` | 核心 loop 暴露为异步生成器。 |
 | `src/query.ts:241` | `queryLoop()` | 真正的 agent loop 实现。 |
 | `src/query.ts:307` | `while (true)` | 主循环是跨轮状态机。 |
@@ -77,8 +85,12 @@ frontier 分类：
 ### 核心闭环
 
 ```text
-user prompt
-→ QueryEngine.submitMessage()
+claude CLI
+→ entrypoints/cli.tsx bootstrap
+→ main.tsx Commander
+→ interactive: launchRepl() / REPL.onSubmit()
+→ handlePromptSubmit()
+→ REPL.onQuery()
 → query() / queryLoop()
 → model returns assistant message with tool_use
 → runTools() / runToolUse()
@@ -86,6 +98,16 @@ user prompt
 → tool_result user message
 → next model call
 → final assistant text
+```
+
+headless / SDK 模式的入口不同，但收敛到同一个核心 loop：
+
+```text
+claude -p / SDK
+→ main.tsx --print mode
+→ cli/print.ts runHeadless()
+→ QueryEngine.ask()
+→ query() / queryLoop()
 ```
 
 ## Frontier Queue

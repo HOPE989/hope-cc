@@ -43,10 +43,12 @@
 1. 先从命名上找核心入口：搜索 `query`、`queryLoop`、`while (true)`，定位到 `src/query.ts`。
 2. 在 `src/query.ts:219` 看到 `query()` 是异步生成器入口，在 `src/query.ts:241` 看到真正实现是 `queryLoop()`。
 3. 在 `src/query.ts:307` 看到显式 `while (true)`，确认这不是一次模型调用，而是跨轮状态机。
-4. 接着追“谁调用 query”：在 `src/QueryEngine.ts:675` 看到 SDK/headless 入口用 `for await (const message of query(...))` 消费事件；在 `src/screens/REPL.tsx:2392` 看到 REPL 构造 `getToolUseContext()`，后续多处调用核心 query。
-5. 再追“模型如何要求工具”：在 `src/query.ts:557` 附近看到 `toolUseBlocks` 和 `needsFollowUp`，在 `src/query.ts:833` 附近看到 assistant message 中的 `tool_use` 被收集。
-6. 再追“工具如何执行”：在 `src/query.ts:1382` 看到进入 `runTools()` 或 `StreamingToolExecutor`；在 `src/services/tools/toolOrchestration.ts:19` 看到工具调度层；在 `src/services/tools/toolExecution.ts` 看到单工具执行层。
-7. 最后追“下一轮如何形成”：在 `src/query.ts:1728` 之前的状态推进逻辑中，下一轮基于当前消息、assistant 输出和 tool result 继续循环。
+4. 接着反向追“谁调用 query”：在 `src/screens/REPL.tsx:2793` 看到交互 REPL 直接 `for await` 消费 `query()`；在 `src/QueryEngine.ts:675` 看到 headless / SDK 入口也用 `for await (const message of query(...))` 消费事件。
+5. 再向上追“Claude Code 如何启动”：在 `src/entrypoints/cli.tsx:33` 看到轻量 bootstrap 的 `main()`，它处理 fast path 后在 `src/entrypoints/cli.tsx:295` 动态导入 `../main.js`；在 `src/main.tsx:968` 看到 Commander 根命令；在 `src/main.tsx:2584` 看到 `--print` 分支；在 `src/main.tsx:3798` 看到普通交互分支渲染 REPL。
+6. 再追“用户输入如何进入 query”：在 `src/replLauncher.tsx:12` 看到 `launchRepl()`，它把 `<REPL />` 包进 `<App />`；在 `src/screens/REPL.tsx:3142` 看到 `onSubmit`；在 `src/screens/REPL.tsx:3490` 看到 `onSubmit` 调用 `handlePromptSubmit()`；在 `src/utils/handlePromptSubmit.ts:560` 看到 `executeUserInput()` 调用 `onQuery()`；最后回到 `src/screens/REPL.tsx:2793` 进入 `query()`。
+7. 再追“模型如何要求工具”：在 `src/query.ts:557` 附近看到 `toolUseBlocks` 和 `needsFollowUp`，在 `src/query.ts:833` 附近看到 assistant message 中的 `tool_use` 被收集。
+8. 再追“工具如何执行”：在 `src/query.ts:1382` 看到进入 `runTools()` 或 `StreamingToolExecutor`；在 `src/services/tools/toolOrchestration.ts:19` 看到工具调度层；在 `src/services/tools/toolExecution.ts` 看到单工具执行层。
+9. 最后追“下一轮如何形成”：在 `src/query.ts:1728` 之前的状态推进逻辑中，下一轮基于当前消息、assistant 输出和 tool result 继续循环。
 
 这条阅读路径说明：Agent Loop 的主干不是某个工具，也不是某个 UI，而是 `query.ts` 里的状态推进协议。
 
@@ -54,6 +56,17 @@
 
 | 入口 | 文件 | 符号 / 线索 | 作用 |
 |---|---|---|---|
+| CLI bootstrap | `src/entrypoints/cli.tsx:33` | `main()` | 先处理 version、MCP、bridge、daemon 等 fast path。 |
+| 完整 CLI | `src/entrypoints/cli.tsx:295` | `await import('../main.js')` | 非 fast path 进入完整 Commander CLI。 |
+| Commander 根命令 | `src/main.tsx:968` | `program.name('claude')` | 声明默认交互、`-p/--print`、resume、tools、permission 等 CLI 参数。 |
+| 交互启动 | `src/main.tsx:3798` | `launchRepl(...)` | 普通交互模式渲染 REPL。 |
+| REPL 挂载 | `src/replLauncher.tsx:12` | `launchRepl()` | 用 `<App><REPL /></App>` 包装交互 session。 |
+| 用户提交 | `src/screens/REPL.tsx:3142` | `onSubmit` | PromptInput 提交后的入口。 |
+| 输入处理 | `src/utils/handlePromptSubmit.ts:120` | `handlePromptSubmit()` | 处理空输入、slash command、排队、附件、模式。 |
+| query 触发 | `src/utils/handlePromptSubmit.ts:560` | `await onQuery(...)` | 输入转成消息后触发 REPL 的 `onQuery`。 |
+| REPL 进入 loop | `src/screens/REPL.tsx:2793` | `for await (const event of query(...))` | 交互模式实际进入 agent loop。 |
+| print/headless | `src/main.tsx:2584` | `--print mode` | 非交互模式不渲染 REPL，转入 `runHeadless()`。 |
+| SDK/headless loop | `src/QueryEngine.ts:675` | `for await (const message of query(...))` | `ask()` / headless 入口复用核心 loop。 |
 | 核心 loop | `src/query.ts:219` | `query()` | 对外暴露异步生成器。 |
 | 核心实现 | `src/query.ts:241` | `queryLoop()` | 维护跨轮状态和终止路径。 |
 | 主循环 | `src/query.ts:307` | `while (true)` | 显式状态机，不是一次调用。 |
@@ -76,18 +89,41 @@
 
 ## Core Call Chain
 
-1. `src/screens/REPL.tsx` 或 `src/QueryEngine.ts` 准备消息、系统提示和 `ToolUseContext`。
-2. 入口层调用 `src/query.ts:query()`。
-3. `query()` 委托 `queryLoop()`。
-4. `queryLoop()` 初始化 `State`，进入 `while (true)`。
-5. 每轮根据当前 messages 准备模型输入，并处理预算、上下文、恢复等前置逻辑。
-6. 模型 streaming 产出 assistant message。
-7. 如果 assistant message 中没有真实 `tool_use`，进入完成、stop hook、错误恢复或预算路径。
-8. 如果出现 `tool_use`，收集为 `toolUseBlocks`。
-9. 工具执行进入 `StreamingToolExecutor` 或 `runTools()`。
-10. 单个工具执行形成 `tool_result`。
-11. `tool_result` 作为新的 user message 回填 transcript。
-12. 下一轮基于新的 transcript 继续。
+### 交互模式启动链路
+
+1. `src/entrypoints/cli.tsx:33`：轻量 bootstrap 先处理 `--version`、MCP server、bridge、daemon、background session 等 fast path。
+2. `src/entrypoints/cli.tsx:295`：普通路径动态导入 `../main.js`，进入完整 CLI。
+3. `src/main.tsx:585`：完整 CLI 的 `main()` 做信号处理、深链 / ssh / assistant 等 argv 预处理。
+4. `src/main.tsx:884` / `src/main.tsx:968`：`run()` 创建 Commander 根命令，声明默认交互模式和 `-p/--print` 非交互模式。
+5. `src/main.tsx:3798`：没有 `--print`、没有 resume picker 等特殊分支时，调用 `launchRepl()`。
+6. `src/replLauncher.tsx:12`：`launchRepl()` 渲染 `<App><REPL /></App>`，`App` 提供 app state、stats、FPS context。
+7. `src/screens/REPL.tsx:3142`：用户在 PromptInput 按 Enter 后触发 `onSubmit`。
+8. `src/screens/REPL.tsx:3490`：`onSubmit` 调用 `handlePromptSubmit()`。
+9. `src/utils/handlePromptSubmit.ts:120` / `src/utils/handlePromptSubmit.ts:396`：输入先经过排队、slash command、附件、IDE selection、bash mode 等处理。
+10. `src/utils/handlePromptSubmit.ts:560`：处理后的 `newMessages` 调用 `onQuery(...)`。
+11. `src/screens/REPL.tsx:2793`：`onQuery` 构造 system prompt、user context、system context、tool context 后 `for await` 消费 `query()`。
+
+### 非交互 / SDK 链路
+
+1. `src/main.tsx:2584`：`isNonInteractiveSession` 为真时进入 `--print mode`。
+2. `src/main.tsx:2843`：动态导入 `src/cli/print.js` 并调用 `runHeadless(...)`。
+3. `src/cli/print.ts:2147`：headless 的 `run()` 循环中 `for await (const message of ask(...))`。
+4. `src/QueryEngine.ts:1186`：`ask()` 是 SDK/headless 包装层。
+5. `src/QueryEngine.ts:675`：包装层最终仍然 `for await (const message of query(...))`，复用核心 agent loop。
+
+### 核心 loop 内部链路
+
+1. 入口层调用 `src/query.ts:query()`。
+2. `query()` 委托 `queryLoop()`。
+3. `queryLoop()` 初始化 `State`，进入 `while (true)`。
+4. 每轮根据当前 messages 准备模型输入，并处理预算、上下文、恢复等前置逻辑。
+5. 模型 streaming 产出 assistant message。
+6. 如果 assistant message 中没有真实 `tool_use`，进入完成、stop hook、错误恢复或预算路径。
+7. 如果出现 `tool_use`，收集为 `toolUseBlocks`。
+8. 工具执行进入 `StreamingToolExecutor` 或 `runTools()`。
+9. 单个工具执行形成 `tool_result`。
+10. `tool_result` 作为新的 user message 回填 transcript。
+11. 下一轮基于新的 transcript 继续。
 
 ## Design Reconstruction
 
