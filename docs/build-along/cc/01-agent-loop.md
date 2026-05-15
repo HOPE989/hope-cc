@@ -5,7 +5,7 @@
 本课在 `mini-cc` 中实现了最小 Agent Loop：
 
 ```text
-CLI prompt
+interactive prompt
 -> QueryEngine.submitMessage()
 -> query() / queryLoop()
 -> MockClaudeProvider.createMessage()
@@ -36,7 +36,7 @@ CLI prompt
 
 | 文件 | 变更 |
 |---|---|
-| `mini-cc/src/main.ts` | 最小 CLI 入口，读取 prompt 并创建 `QueryEngine`。 |
+| `mini-cc/src/main.ts` | 最小入口，启动应用并创建 `QueryEngine`；第二课后用户输入统一从交互式提示符进入。 |
 | `mini-cc/src/QueryEngine.ts` | 入口包装，调用 `query()` 并消费事件流。 |
 | `mini-cc/src/query.ts` | 实现跨轮 `messages` 状态、模型调用、`tool_use` 检查、工具结果回填。 |
 | `mini-cc/src/types.ts` | 定义消息块、模型请求 / 响应、查询事件。 |
@@ -54,7 +54,7 @@ CLI prompt
 3. 实现 `query.ts`：每轮调用 provider、保存 assistant message、筛选 `tool_use`。
 4. 拆出 `services/tools`：工具查找、执行、结果映射不放进主 loop。
 5. 实现 `MockClaudeProvider`：构造确定性的两轮对话，先工具调用，再最终回答。
-6. 实现 `BashTool` 和 `main.ts`：从命令行跑通第一课。
+6. 实现 `BashTool` 和 `main.ts`：跑通用户输入进入 agent loop 的最小路径；第二课后入口改为交互式提示符。
 
 ## Annotated Code Walkthrough
 
@@ -64,7 +64,7 @@ CLI prompt
 
 | Step | 文件 | 本课作用 |
 |---|---|---|
-| L01-S01 | `mini-cc/src/main.ts` | 从 CLI 读取 prompt。 |
+| L01-S01 | `mini-cc/src/main.ts` | 启动 mini-cc 应用；用户消息统一从交互式提示符进入。 |
 | L01-S02 | `mini-cc/src/main.ts` | 创建 `QueryEngine`，注入 provider、tools、cwd。 |
 | L01-S03 | `mini-cc/src/main.ts` | 提交用户消息进入 engine。 |
 | L01-S04 | `mini-cc/src/QueryEngine.ts` | 准备 `query()` 所需上下文。 |
@@ -109,15 +109,16 @@ CLI prompt
 
 ```powershell
 Set-Location C:\dev\workspace\hope-cc\mini-cc
-npm run lesson:01 -- "List files"
-node --experimental-strip-types src/main.ts "show node version"
+npm run dev
 ```
+
+第二课后，启动命令不再接收一次性 prompt。进入 `mini-cc >>` 后再输入用户消息。
 
 ## Verification
 
 已验证：
 
-- 输入 `List files` 时，mock model 会先发出 `bash` 的 `tool_use`。
+- 输入用户消息时，模型 provider 会先发出 `bash` 的 `tool_use`。
 - `runTools()` 会调用 `runToolUse()`。
 - `BashTool.call()` 在当前 cwd 执行命令。
 - 工具结果会作为 `tool_result` 放回 user message。

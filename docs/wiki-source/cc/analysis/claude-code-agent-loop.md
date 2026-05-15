@@ -236,29 +236,21 @@ streaming chunk / partial_json
 
 下面四点来自 `mini-cc` 代码里新增的补充注释。它们不只是实现备注，而是对上一版 analysis 需要补强的追问。
 
-### 1. L01-S01 为什么从 `process.argv.slice(2)` 开始？
+### 1. L01-S01 为什么变成启动交互式入口？
 
-`mini-cc/src/main.ts` 里对 `L01-S01` 补了一段说明：
+早期 Lesson 01 为了快速跑通闭环，曾经用 `process.argv.slice(2)` 从命令行读取一次性 prompt。第二课接入真实模型后，这个入口被收敛成持续交互式 harness：
 
 ```ts
-/*
- * //L01-S01 读取参数：读取命令行 prompt，作为简化版 Claude Code 交互输入的入口。
- *
- * 运行 `npm run lesson:01 -- "列出目录"` 时，npm 里的 `--` 只是 npm 自己的参数分隔符，
- * 它不会作为脚本参数传给 Node。
- */
-const prompt = process.argv.slice(2).join(" ") || "List files in the current workspace";
+//L01-S01 启动入口：main.ts 只负责启动 mini-cc 应用；用户消息统一从交互式提示符进入。
 ```
 
-这不是 Claude Code 源码机制本身，但它是 build-along 教学入口必须讲清楚的运行事实。
-
-`mini-cc` 第一课没有复刻 Claude Code 的完整 Commander CLI。它只保留一个最小入口：
+现在运行路径是：
 
 ```text
-npm run lesson:01 -- "列出目录"
--> npm 把 -- 后面的内容转交给脚本
--> node --experimental-strip-types src/main.ts 列出目录
--> process.argv.slice(2) 得到 ["列出目录"]
+访问 npm run dev
+-> node --experimental-strip-types src/main.ts
+-> main.ts 启动 mini-cc >> 提示符
+-> 用户输入 prompt
 -> prompt 进入 QueryEngine
 ```
 
@@ -267,11 +259,11 @@ npm run lesson:01 -- "列出目录"
 - Claude Code 的真实 CLI 在 `src/main.tsx:968` 使用 Commander 声明根命令和 `[prompt]` 参数。
 - `src/main.tsx:2584` 附近处理 `--print` 非交互模式。
 - `src/main.tsx:3798` 附近进入交互 REPL。
-- `mini-cc/src/main.ts` 没有复刻这些分支，只用 `process.argv` 建立“用户输入进入 agent loop”的最小可运行入口。
+- `mini-cc/src/main.ts` 没有复刻这些分支，只保留一个交互式提示符，建立“用户输入进入 QueryEngine，再进入 agent loop”的最小可运行入口。
 
 设计修正：
 
-`L01-S01` 不应该被理解成“Claude Code 也是这样直接 slice argv”。它只是教学版入口。真正要保留的机制不是 argv 解析方式，而是这一层的边界：入口层读取用户输入，然后把 prompt 交给 `QueryEngine`，不要把 agent loop 写进 CLI 入口里。
+`L01-S01` 不应该被理解成某种特定 argv 解析方式。真正要保留的机制是入口边界：入口层负责启动应用、读取用户输入，然后把 prompt 交给 `QueryEngine`，不要把 agent loop 写进 CLI 入口里。
 
 ### 2. `tool_result` 为什么必须是 user message？
 
@@ -444,7 +436,7 @@ tools/*
 | Claude Code 边界 | mini-cc 对应 | 保留理由 |
 |---|---|---|
 | `src/query.ts` | `mini-cc/src/query.ts` | 主状态机独立，后续才能加 compact、max turns、resume。 |
-| `src/main.tsx` / CLI 入口 | `mini-cc/src/main.ts` | 第一课用 `process.argv` 读取 prompt，只保留入口把用户输入交给 `QueryEngine` 的边界。 |
+| `src/main.tsx` / CLI / REPL 入口 | `mini-cc/src/main.ts` | 教学版入口启动交互式提示符，只保留入口把用户输入交给 `QueryEngine` 的边界。 |
 | `src/QueryEngine.ts` / REPL | `mini-cc/src/QueryEngine.ts` | 入口包装和核心 loop 分开。 |
 | `src/Tool.ts` | `mini-cc/src/Tool.ts` | 工具有 schema、call 和上下文。 |
 | `src/services/api/claude.ts` | `mini-cc/src/services/api/mockClaude.ts` | provider 可替换，第一课用 mock。 |
