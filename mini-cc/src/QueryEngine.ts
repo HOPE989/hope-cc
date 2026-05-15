@@ -1,5 +1,5 @@
 import type { Message, ModelProvider } from "./types.ts";
-import type { Tool } from "./Tool.ts";
+import type { Tool, ToolPermissionContext } from "./Tool.ts";
 import { query } from "./query.ts";
 
 export class QueryEngine {
@@ -9,6 +9,7 @@ export class QueryEngine {
     provider: ModelProvider;
     tools: Tool[];
     cwd: string;
+    permissionContext?: ToolPermissionContext;
     systemPrompt?: string;
     maxTurns?: number;
   };
@@ -17,6 +18,7 @@ export class QueryEngine {
     provider: ModelProvider;
     tools: Tool[];
     cwd: string;
+    permissionContext?: ToolPermissionContext;
     systemPrompt?: string;
     maxTurns?: number;
   }) {
@@ -32,7 +34,11 @@ export class QueryEngine {
       messages,
       provider: this.options.provider,
       tools: this.options.tools,
-      toolUseContext: { cwd: this.options.cwd },
+      //L03-S04 传入权限上下文：QueryEngine 是入口包装层，它把 main.ts 准备好的权限能力交给 queryLoop，而不自己做权限判断。
+      toolUseContext: {
+        cwd: this.options.cwd,
+        permissionContext: this.options.permissionContext,
+      },
       systemPrompt: this.options.systemPrompt,
       maxTurns: this.options.maxTurns,
     })) {
