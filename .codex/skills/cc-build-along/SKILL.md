@@ -13,6 +13,8 @@ Use this skill to turn a source-backed mechanism into runnable `mini-cc` code an
 
 Default outputs are `mini-cc` changes and `docs/build-along/cc/`. Do not generate raw unless the user explicitly asks for raw / JOB-WIKI source / ingest packaging.
 
+Only update build-along when the turn changes `mini-cc` code, lesson comments, scripts, verification commands, or implementation boundaries. If the user is only clarifying runtime behavior or asking a mechanism question after coding is complete, update the relevant analysis document instead of build-along.
+
 ## Workflow
 
 1. **Start from analysis**
@@ -23,6 +25,8 @@ Default outputs are `mini-cc` changes and `docs/build-along/cc/`. Do not generat
 2. **Choose the minimal learning implementation**
    - Keep the feature small and runnable.
    - Preserve architecture pressure points: query loop, provider adapter, tool protocol, tool services, permissions, compact, skills, plugins, session.
+   - Evolve existing entrypoints and scripts before adding new ones; a new lesson number is not a reason to create a parallel CLI, npm script, or `main` file.
+   - When replacing a teaching implementation, prefer commenting it as the previous path or documenting the migration instead of silently deleting it, unless the user explicitly asks for deletion.
    - Avoid placing everything in `query.ts`.
 
 3. **Edit mini-cc**
