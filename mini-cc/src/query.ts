@@ -3,7 +3,8 @@ import type { ContentBlock, Message, ModelProvider, QueryEvent, ToolUseBlock } f
 import { runTools } from "./services/tools/toolOrchestration.ts";
 
 type QueryParams = {
-  prompt: string;
+  prompt?: string;
+  messages?: Message[];
   provider: ModelProvider;
   tools: Tool[];
   toolUseContext: ToolUseContext;
@@ -35,9 +36,12 @@ export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
 async function* queryLoop(params: QueryParams): AsyncGenerator<QueryEvent> {
   const system = params.systemPrompt ?? "You are a small coding agent. Use tools when needed.";
   const maxTurns = params.maxTurns ?? 8;
+  const initialMessages =
+    params.messages ?? [{ role: "user" as const, content: params.prompt ?? "" }];
+
   //L01-S12 初始化状态：state 保存跨轮 transcript 和 turnCount，这是 agent loop 能连续推进的核心。
   let state: QueryState = {
-    messages: [{ role: "user", content: params.prompt }],
+    messages: initialMessages,
     turnCount: 0,
   };
 
