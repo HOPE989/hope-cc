@@ -9,7 +9,7 @@
 - 已完成节点：`Agent Loop`、`Anthropic Provider + Bash`、`Permission / Tool Safety`、`Streaming Provider`
 - 当前推荐节点：`Tool Dispatcher`
 - `mini-cc` 状态：已完成第一课最小 agent loop、第二课 Anthropic-compatible Messages API、第三课最小工具权限层、第四课 provider 内 streaming 聚合；现在真实模型的 stream chunk 会先聚合成完整 `ContentBlock[]`，再交给既有 query loop
-- 文档状态：Agent Loop、Anthropic Provider、Permission / Tool Safety、Streaming Provider 已有 analysis / build-along；后续主题 raw 仍只在用户明确要求时生成
+- 文档状态：Agent Loop、Anthropic Provider、Permission / Tool Safety、Streaming Provider 已有 analysis / build-along / raw；后续主题 raw 仍只在用户明确要求时生成
 
 ## 使用方式
 
@@ -185,7 +185,7 @@ frontier 分类：
 | Agent Loop | 完成 | `docs/wiki-source/cc/analysis/claude-code-agent-loop.md` | `docs/build-along/cc/01-agent-loop.md` | `docs/wiki-source/cc/raw/2026-05-14-claude-code-agent-loop.md` |
 | Anthropic Provider + Bash | 完成 | `docs/wiki-source/cc/analysis/claude-code-anthropic-provider-tool-use.md` | `docs/build-along/cc/02-anthropic-provider-bash.md` | `docs/wiki-source/cc/raw/2026-05-15-claude-code-anthropic-provider-bash.md` |
 | Permission / Tool Safety | 完成 | `docs/wiki-source/cc/analysis/claude-code-permission-tool-safety.md` | `docs/build-along/cc/03-permission-tool-safety.md` | `docs/wiki-source/cc/raw/2026-05-15-claude-code-permission-tool-safety.md` |
-| Streaming Provider | 完成 | `docs/wiki-source/cc/analysis/claude-code-streaming-provider.md` | `docs/build-along/cc/04-streaming-provider.md` | 仅用户明确要求时生成 |
+| Streaming Provider | 完成 | `docs/wiki-source/cc/analysis/claude-code-streaming-provider.md` | `docs/build-along/cc/04-streaming-provider.md` | `docs/wiki-source/cc/raw/2026-05-18-claude-code-streaming-provider.md` |
 | Tool Dispatcher | 待开始 | `docs/wiki-source/cc/analysis/claude-code-tool-dispatcher.md` | 待定 | 仅用户明确要求时生成 |
 
 ## Candidate JOB-WIKI Mapping
