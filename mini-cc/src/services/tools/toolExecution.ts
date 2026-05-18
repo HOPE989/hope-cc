@@ -2,6 +2,11 @@ import type { Tool, ToolUseContext } from "../../Tool.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../types.ts";
 import { hasPermissionToUseTool } from "../../utils/permissions/permissions.ts";
 
+/**
+ * 执行单个 tool_use，包括工具查找、权限检查、工具调用和 tool_result 映射。
+ * @param options 单个 tool_use、可用工具列表和工具运行上下文。
+ * @returns 可回填给模型的 tool_result block。
+ */
 export async function runToolUse(options: {
   toolUse: ToolUseBlock;
   tools: Tool[];

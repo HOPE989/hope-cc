@@ -48,6 +48,11 @@ export type ModelResponse = {
 };
 
 export type ModelProvider = {
+  /**
+   * 把 mini-cc 的模型请求发送给具体 provider，并返回标准化后的模型响应。
+   * @param request 本轮系统提示、消息历史和工具 schema。
+   * @returns 标准化后的 assistant content blocks 和停止原因。
+   */
   createMessage(request: ModelRequest): Promise<ModelResponse>;
 };
 

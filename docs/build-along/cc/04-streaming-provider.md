@@ -45,6 +45,8 @@ main.ts
 | `docs/build-along/cc/04-streaming-provider.md` | 本文档。 |
 | `docs/wiki-source/cc/00-learning-map.md` | 更新当前节点、完成状态和下一步 frontier。 |
 
+维护补充：本轮按用户要求给 `mini-cc/src` 中的稳定函数、类方法、对象方法和类型函数签名补齐 JSDoc 方法注释，统一说明方法职责、`@param` 和 `@returns`。这只是阅读辅助，不改变 `Lxx-Sxx` 主课程路径、模块边界或运行行为。
+
 ## Implementation Steps
 
 1. 从 `main.ts` 继续创建同一个 `QueryEngine` 和同一个 Anthropic provider，不为 L04 新增入口。

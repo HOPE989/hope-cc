@@ -1,6 +1,12 @@
 import type { Tool, ToolUseContext } from "../../Tool.ts";
 import type { PermissionDecision, PermissionResult } from "./PermissionResult.ts";
 
+/**
+ * 把工具返回的 passthrough 结果归一成需要人工确认的 ask 决策。
+ * @param toolName 请求执行的工具名。
+ * @param result 工具级权限检查返回的 passthrough 结果。
+ * @returns 标准化后的 ask 权限决策。
+ */
 function askFromPassthrough(toolName: string, result: PermissionResult): PermissionDecision {
   return {
     behavior: "ask",
@@ -10,6 +16,12 @@ function askFromPassthrough(toolName: string, result: PermissionResult): Permiss
   };
 }
 
+/**
+ * 把 ask 决策转换成拒绝决策，用于 deny 模式或缺少审批回调时 fail closed。
+ * @param toolName 请求执行的工具名。
+ * @param decision 已标准化的 ask 权限决策。
+ * @returns 标准化后的 deny 权限决策。
+ */
 function denyFromAsk(toolName: string, decision: Extract<PermissionDecision, { behavior: "ask" }>): PermissionDecision {
   return {
     behavior: "deny",
@@ -18,6 +30,11 @@ function denyFromAsk(toolName: string, decision: Extract<PermissionDecision, { b
   };
 }
 
+/**
+ * 合成工具级检查、运行模式和人工审批结果，得出最终工具权限决策。
+ * @param options 工具、工具输入和工具运行上下文。
+ * @returns 最终 allow 或 deny 权限决策。
+ */
 export async function hasPermissionToUseTool(options: {
   tool: Tool;
   input: Record<string, unknown>;
