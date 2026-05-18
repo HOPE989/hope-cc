@@ -17,6 +17,11 @@ type QueryState = {
   turnCount: number;
 };
 
+/**
+ * 从 assistant content blocks 中提取所有文本块并合并成展示文本。
+ * @param blocks 模型返回的标准化 content blocks。
+ * @returns 合并后的 assistant 文本。
+ */
 function textFromBlocks(blocks: ContentBlock[]): string {
   return blocks
     .filter((block) => block.type === "text")
@@ -24,15 +29,30 @@ function textFromBlocks(blocks: ContentBlock[]): string {
     .join("\n");
 }
 
+/**
+ * 从 assistant content blocks 中筛选出需要执行的 tool_use 块。
+ * @param blocks 模型返回的标准化 content blocks。
+ * @returns 本轮模型请求执行的工具调用列表。
+ */
 function toolUseBlocks(blocks: ContentBlock[]): ToolUseBlock[] {
   return blocks.filter((block): block is ToolUseBlock => block.type === "tool_use");
 }
 
+/**
+ * 暴露 mini-cc 的 agent loop 异步事件流入口。
+ * @param params 本轮 query 所需的 prompt、历史消息、provider、工具和运行上下文。
+ * @returns 按 assistant、tool_result、done 顺序产出的查询事件流。
+ */
 export async function* query(params: QueryParams): AsyncGenerator<QueryEvent> {
   //L01-S11 暴露 loop 入口：query() 只暴露异步生成器接口，真正状态机下沉到 queryLoop()。
   yield* queryLoop(params);
 }
 
+/**
+ * 实现“模型 -> 工具 -> 模型”的跨轮状态机，直到没有 tool_use 或达到 maxTurns。
+ * @param params 本轮 query 所需的 prompt、历史消息、provider、工具和运行上下文。
+ * @returns 按 loop 进度产出的查询事件流。
+ */
 async function* queryLoop(params: QueryParams): AsyncGenerator<QueryEvent> {
   const system = params.systemPrompt ?? "You are a small coding agent. Use tools when needed.";
   const maxTurns = params.maxTurns ?? 8;
@@ -60,6 +80,7 @@ async function* queryLoop(params: QueryParams): AsyncGenerator<QueryEvent> {
     console.log(`\n[turn ${state.turnCount}] call model`);
 
     //L01-S14 调用模型：每一轮都把当前 messages 和工具 schema 发给模型，模型只能通过协议请求工具。
+    //L04-S04 隔离主状态机和 chunk 协议：queryLoop 仍然只等待 provider 返回完整 ContentBlock[]，所以 agent loop 的停止条件、tool_use 检测和工具调度不用理解 SSE。
     const response = await params.provider.createMessage({
       system,
       messages: state.messages,

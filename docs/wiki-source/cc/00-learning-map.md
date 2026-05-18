@@ -6,10 +6,10 @@
 
 当前状态：
 
-- 已完成节点：`Agent Loop`、`Anthropic Provider + Bash`、`Permission / Tool Safety`
-- 当前推荐节点：`Streaming Provider` 或 `Tool Dispatcher`
-- `mini-cc` 状态：已完成第一课最小 agent loop、第二课 Anthropic-compatible Messages API、第三课最小工具权限层；现在真实模型发起 `bash` tool call 前会先经过 allow / ask / deny 决策
-- 文档状态：Agent Loop、Anthropic Provider、Permission / Tool Safety 已有 analysis / build-along；Permission / Tool Safety raw 已按用户要求生成，后续主题 raw 仍只在用户明确要求时生成
+- 已完成节点：`Agent Loop`、`Anthropic Provider + Bash`、`Permission / Tool Safety`、`Streaming Provider`
+- 当前推荐节点：`Tool Dispatcher`
+- `mini-cc` 状态：已完成第一课最小 agent loop、第二课 Anthropic-compatible Messages API、第三课最小工具权限层、第四课 provider 内 streaming 聚合；现在真实模型的 stream chunk 会先聚合成完整 `ContentBlock[]`，再交给既有 query loop
+- 文档状态：Agent Loop、Anthropic Provider、Permission / Tool Safety、Streaming Provider 已有 analysis / build-along；后续主题 raw 仍只在用户明确要求时生成
 
 ## 使用方式
 
@@ -44,12 +44,12 @@ frontier 分类：
 
 | 项目 | 内容 |
 |---|---|
-| 节点 | Permission / Tool Safety |
-| 核心问题 | 真实模型能发起 `bash` 后，系统如何在执行前决定 allow / ask / deny，并把拒绝结果回填给模型？ |
-| 源码结论 | Claude Code 的权限边界在工具执行前：工具级 `checkPermissions` 产出 `PermissionResult`，统一 `hasPermissionsToUseTool` 合成最终决策，非 allow 会作为错误 `tool_result` 回填。Bash 权限检查还包含规则、路径约束、子命令和 shell 安全解析。 |
-| mini-cc 结果 | Lesson 03 新增 `PermissionResult` 类型、统一 `hasPermissionToUseTool()`、`bashSafety.ts` 和交互式 ask；`BashTool.call()` 不再持有危险命令判断。 |
-| 注释路径 | `L03-S01` 到 `L03-S23` |
-| 后续牵引 | Streaming Provider、Tool Dispatcher、Permission Hooks |
+| 节点 | Streaming Provider |
+| 核心问题 | Anthropic streaming API 连续吐出 chunk 时，Claude Code 如何把 `text_delta` 和 `input_json_delta` 聚合成完整 assistant content block？ |
+| 源码结论 | Claude Code 在 provider 层使用 raw stream，自行累加 `content_block_delta`；`tool_use.input` 在 streaming 阶段先是字符串，`content_block_stop` 时经 `normalizeContentFromAPI()` 解析成对象。`query.ts` 仍然按完整 assistant content 中的 `tool_use` 判断 follow-up。 |
+| mini-cc 结果 | Lesson 04 从既有 `main.ts -> QueryEngine -> queryLoop -> provider` 路径进入，在 `AnthropicMessagesProvider` 内新增 streaming SSE parser、event reducer、`inputJson` 聚合和非 streaming fallback；`queryLoop` 不解析 chunk，只消费完整 `ContentBlock[]`。 |
+| 注释路径 | `L04-S01` 到 `L04-S09` |
+| 后续牵引 | Tool Dispatcher、StreamingToolExecutor、Permission Hooks、Context / Compaction |
 
 ## Current Node Evidence
 
@@ -62,6 +62,10 @@ frontier 分类：
 | `src/services/api/client.ts:88` | `getAnthropicClient()` | Anthropic SDK client 创建入口。 |
 | `src/services/api/claude.ts:864` | `anthropic.beta.messages.create(...)` | 非 streaming 模型请求使用 Messages API。 |
 | `src/services/api/claude.ts:1822` | `anthropic.beta.messages.create({ stream: true })` | 主路径使用 streaming Messages API。 |
+| `src/services/api/claude.ts:1995` | `content_block_start` | streaming block 开始时建立 text/tool_use 槽位。 |
+| `src/services/api/claude.ts:2087` | `input_json_delta` | 工具输入以 `partial_json` 形式累加。 |
+| `src/services/api/claude.ts:2171` | `content_block_stop` | block 完成后构造 assistant message。 |
+| `src/utils/messages.ts:2651` | `normalizeContentFromAPI()` | streamed tool input 字符串在这里解析成对象。 |
 | `src/utils/api.ts:136` | tool schema | 工具 schema 以 `name / description / input_schema` 暴露。 |
 | `src/query.ts:1382` | `runTools()` / `StreamingToolExecutor` | 工具执行从主 loop 下沉到服务层。 |
 | `src/Tool.ts:158` | `ToolUseContext` | 工具执行上下文边界。 |
@@ -81,13 +85,15 @@ frontier 分类：
 - `docs/build-along/cc/02-anthropic-provider-bash.md`
 - `docs/wiki-source/cc/analysis/claude-code-permission-tool-safety.md`
 - `docs/build-along/cc/03-permission-tool-safety.md`
+- `docs/wiki-source/cc/analysis/claude-code-streaming-provider.md`
+- `docs/build-along/cc/04-streaming-provider.md`
 
 ## Frontier Queue
 
 | 优先级 | Frontier | 类型 | 为什么由 Agent Loop 牵出 | mini-cc 影响 | 预期产物 |
 |---|---|---|---|---|---|
-| P0 | Streaming Provider | 要学习 / 要拓展 | 第二课只做非 streaming；真实 Claude Code 主路径会处理 streaming chunk 和 `input_json_delta`。 | 增加 stream adapter，把 chunk 聚合成 `ContentBlock[]`。 | Lesson 04；analysis；raw 仅用户要求时生成。 |
-| P0 | Tool Dispatcher | 要学习 / 要拓展 | Agent Loop 已能识别 `tool_use`，Lesson 03 已有最小权限层；下一步可以扩展工具 schema、查找、执行、结果映射和调度。 | 增加 `read_file`、`write_file`、`edit_file`，复用 permission pipeline。 | 后续 lesson；analysis；raw 仅用户要求时生成。 |
+| P0 | Tool Dispatcher | 要学习 / 要拓展 | Streaming Provider 已能产出完整 `tool_use`；下一步要理解工具如何从 schema 变成真实行动。 | 增加 `read_file`、`write_file`、`edit_file`，复用 permission pipeline。 | Lesson 05；analysis；raw 仅用户要求时生成。 |
+| P0 | StreamingToolExecutor | 要学习 / 要优化 | Lesson 04 只做 provider 内聚合；真实 Claude Code 可在 tool block 完成后提前排队执行工具。 | 在多个工具之后再引入并发安全、结果排序和 fallback discard。 | 后续 lesson；analysis；raw 仅用户要求时生成。 |
 | P0 | Permission Hooks | 要学习 / 要拓展 | Lesson 03 只做静态 permission decision；Claude Code 在执行前后还有 PreToolUse / PostToolUse / PermissionRequest hooks。 | 增加最小 hook registry，并让 hook 不能绕过 hard deny。 | 后续 lesson；analysis；raw 仅用户要求时生成。 |
 | P0 | Context / Compaction | 要学习 / 要拓展 | 每轮 loop 都把 transcript 送回模型，长会话必须处理预算和压缩。 | 增加 token estimate、transcript、summary message。 | 后续 lesson；analysis；raw 仅用户要求时生成。 |
 | P1 | Input / Slash Commands | 要学习 / 要拓展 | `query()` 前还有 slash command、附件、memory 和本地命令处理。 | 增加 command registry、`/help`、`/clear`、`/compact`。 | input command analysis。 |
@@ -100,19 +106,19 @@ frontier 分类：
 
 ### P0：Agent Loop 的直接依赖
 
-1. **Streaming Provider**
-   - 目标：理解真实 Claude Code streaming 下 chunk / `partial_json` 如何聚合成完整 content block。
-   - 预期注释：`L04-Sxx`。
-2. **Tool Dispatcher**
+1. **Tool Dispatcher**
    - 目标：理解工具如何从 schema 变成真实行动。
-   - 预期注释：`L04-Sxx` 或 `L05-Sxx`。
+   - 预期注释：`L05-Sxx`。
+2. **StreamingToolExecutor**
+   - 目标：理解完成的 `tool_use` block 如何提前排队执行，以及 fallback 时如何 discard pending results。
+   - 预期注释：`L06-Sxx` 或并入 dispatcher 后续课。
 3. **Permission Hooks**
    - 目标：在 Lesson 03 静态权限层之后理解 PreToolUse / PostToolUse / PermissionRequest hooks。
-   - 预期注释：`L05-Sxx`。
+   - 预期注释：`L06-Sxx`。
 4. **Context / Compaction**
    - 工具闭环跑通后进入。
    - 目标：理解 `messagesForQuery` 如何形成和压缩。
-   - 预期注释：`L05-Sxx` 或 `L06-Sxx`。
+   - 预期注释：`L07-Sxx` 或后续编号。
 
 ### P1：进入模型前后的上下文面
 
@@ -138,7 +144,7 @@ frontier 分类：
 | Track | 学习目标 | 关键源码 | mini-cc 演进 |
 |---|---|---|---|
 | Agent Loop / Query | 理解“模型 -> 工具 -> 模型”的主状态机。 | `src/query.ts`, `src/QueryEngine.ts`, `src/screens/REPL.tsx` | 已完成最小 loop。 |
-| Model Provider / API | 理解 transcript 和工具 schema 如何进入 Anthropic Messages API。 | `src/services/api/client.ts`, `src/services/api/claude.ts`, `src/utils/api.ts` | 已完成非 streaming Anthropic provider。 |
+| Model Provider / API | 理解 transcript、工具 schema 和 streaming chunk 如何进入 / 离开 Anthropic Messages API。 | `src/services/api/client.ts`, `src/services/api/claude.ts`, `src/utils/api.ts`, `src/utils/messages.ts` | 已完成 streaming provider adapter。 |
 | Tool Calling / Dispatcher | 理解工具如何从 schema 变成真实行动。 | `src/Tool.ts`, `src/tools.ts`, `src/tools/`, `src/services/tools/` | 增加文件工具和调度策略。 |
 | Permission / Hooks | 理解工具执行前后的安全和 hook 边界。 | `src/hooks/useCanUseTool.tsx`, `src/services/tools/toolHooks.ts`, `src/utils/permissions/` | 已完成最小 permission decision；hooks 待拓展。 |
 | Context / Compaction | 理解长会话如何控制上下文预算。 | `src/services/compact/`, `src/query/tokenBudget.ts`, `src/utils/toolResultStorage.ts` | 增加 transcript 和 summary。 |
@@ -147,31 +153,30 @@ frontier 分类：
 | Session / Subagent / Remote | 理解长会话、多 agent、远程入口如何复用主 loop。 | `src/utils/sessionStorage.ts`, `src/tools/AgentTool/`, `src/remote/`, `src/bridge/` | 增加 save/resume 和 child loop。 |
 | Observability / Quality | 理解 loop、工具、成本和错误如何被诊断。 | `src/utils/queryProfiler.ts`, `src/services/analytics/`, `src/cost-tracker.ts` | 增加 event log 和 trace span。 |
 
-## Next Lesson：Streaming Provider 或 Tool Dispatcher
+## Next Lesson：Tool Dispatcher
 
 ### Learning Questions
 
-- streaming provider 中，`content_block_start`、`input_json_delta`、`content_block_stop` 如何聚合成完整 `tool_use`？
-- streaming 失败时，Claude Code 为什么需要 fallback / discard pending results？
 - 文件工具进入 dispatcher 后，如何复用 Lesson 03 的 permission pipeline？
+- Claude Code 如何按 `tool_use.name` 查找工具定义，并把 schema、输入校验、执行和结果映射分层？
+- 多个工具请求出现时，串行、并发和安全边界如何决定？
 - Claude Code 的 permission hook 如何插入工具执行前后？
 
 ### Recommended Source Entry
 
-- `src/services/api/claude.ts`
-- `src/utils/messages.ts`
 - `src/services/tools/toolExecution.ts`
 - `src/services/tools/StreamingToolExecutor.ts`
 - `src/tools.ts`
 - `src/tools/`
 - `src/services/tools/toolHooks.ts`
+- `src/Tool.ts`
 
 ### Expected mini-cc Work
 
-- 先实现非执行型 streaming adapter，把 API chunk 聚合成 `ContentBlock[]`。
-- 或者新增 read/write/edit 工具，并让文件写入复用 permission decision。
-- 保持 `query.ts` 不直接拥有安全策略或 streaming 细节。
-- 增加 `L04-Sxx` 注释路径和 Lesson 04 build-along 文档。
+- 新增 read/write/edit 文件工具或最小 read_file 工具。
+- 文件写入和编辑必须复用 Lesson 03 的 permission decision。
+- 保持 `query.ts` 不直接拥有具体工具细节。
+- 增加 `L05-Sxx` 注释路径和 Lesson 05 build-along 文档。
 
 ## Source Index
 
@@ -180,7 +185,7 @@ frontier 分类：
 | Agent Loop | 完成 | `docs/wiki-source/cc/analysis/claude-code-agent-loop.md` | `docs/build-along/cc/01-agent-loop.md` | `docs/wiki-source/cc/raw/2026-05-14-claude-code-agent-loop.md` |
 | Anthropic Provider + Bash | 完成 | `docs/wiki-source/cc/analysis/claude-code-anthropic-provider-tool-use.md` | `docs/build-along/cc/02-anthropic-provider-bash.md` | `docs/wiki-source/cc/raw/2026-05-15-claude-code-anthropic-provider-bash.md` |
 | Permission / Tool Safety | 完成 | `docs/wiki-source/cc/analysis/claude-code-permission-tool-safety.md` | `docs/build-along/cc/03-permission-tool-safety.md` | `docs/wiki-source/cc/raw/2026-05-15-claude-code-permission-tool-safety.md` |
-| Streaming Provider | 待开始 | `docs/wiki-source/cc/analysis/claude-code-streaming-provider.md` | `docs/build-along/cc/04-streaming-provider.md` | 仅用户明确要求时生成 |
+| Streaming Provider | 完成 | `docs/wiki-source/cc/analysis/claude-code-streaming-provider.md` | `docs/build-along/cc/04-streaming-provider.md` | 仅用户明确要求时生成 |
 | Tool Dispatcher | 待开始 | `docs/wiki-source/cc/analysis/claude-code-tool-dispatcher.md` | 待定 | 仅用户明确要求时生成 |
 
 ## Candidate JOB-WIKI Mapping
