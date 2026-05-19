@@ -1,17 +1,17 @@
 ---
 name: cc-onboarding
-description: Build and maintain the Claude Code learning map for hope-cc. Use when the user wants to start exploring cc, choose a mechanism, update frontier, understand project learning order, or place a topic before source analysis or mini-cc implementation.
+description: Orient Claude Code mechanism exploration in hope-cc without maintaining a learning map. Use when the user wants to choose the next mechanism, understand project direction, or place a topic before source analysis or mini-cc implementation.
 ---
 
 # CC Onboarding
 
-Use this skill to keep the learning map small, current, and mechanism-driven.
+Use this skill to orient the next Claude Code mechanism.
 
 ## Boundary
 
-`AGENTS.md` owns product rules. This skill only updates the learning route.
+`AGENTS.md` owns product rules. This skill only helps choose or frame the next mechanism.
 
-Do not create raw documents. Raw is generated only when the user explicitly asks for raw / JOB-WIKI source / ingest packaging.
+Do not create raw documents.
 
 ## Workflow
 
@@ -19,21 +19,18 @@ Do not create raw documents. Raw is generated only when the user explicitly asks
    - Use the mechanism named by the user.
    - Do not create a detached full-codebase curriculum before the current mechanism is placed.
 
-2. **Inspect current map**
-   - Read `docs/wiki-source/cc/00-learning-map.md` if it exists.
-   - Update the smallest relevant section.
+2. **Inspect active context**
+   - Check active analysis files under `docs/wiki-source/cc/analysis/`.
+   - If useful, read `docs/wiki-source/cc/00-learning-map.md` as lightweight historical context and re-check source before relying on it.
 
-3. **Maintain frontier**
-   - Record current node.
-   - Record confirmed source facts if known.
-   - Record `mini-cc` completed scope if relevant.
-   - Add next topics as:
-     - `要学习`
-     - `要拓展`
-     - `要优化`
+3. **Recommend next step**
+   - Identify the mechanism to study next.
+   - State whether the next output should be external-facing analysis, internal `mini-cc` build-along, or an experiment.
+   - Keep the recommendation scoped; do not rebuild a full curriculum.
 
 4. **Define expected outputs**
-   - Default outputs: `analysis`, optional `build-along`, optional `mini-cc`.
+   - Default output is `analysis`: an external-facing source document for understanding and reproducing a Claude Code mechanism.
+   - Use `build-along` only for internal `mini-cc` learning/build work: lesson decisions, `Lxx-Sxx` walkthroughs, commands, verification, and next frontier.
    - Include `raw` only when the user explicitly asks for raw / JOB-WIKI source / ingest packaging.
 
 5. **Hand off**
@@ -42,26 +39,7 @@ Do not create raw documents. Raw is generated only when the user explicitly asks
    - Use `cc-practice-lab` for behavior verification.
    - Use `cc-job-wiki-source` only on explicit raw request.
 
-## Learning Map Shape
-
-Keep the map practical, not exhaustive:
-
-```markdown
-# Claude Code 源码学习地图
-
-## Current State
-## How To Use This Map
-## Completed Nodes
-## Current Node
-## Frontier Queue
-## Source Index
-## Next Lesson
-## Open Questions
-```
-
 ## Quality Rules
 
-- Update only the relevant area.
-- Do not prefill future raw file paths.
 - Prefer source paths and concrete mechanisms over broad topic names.
 - Mark uncertainty as `待验证`.

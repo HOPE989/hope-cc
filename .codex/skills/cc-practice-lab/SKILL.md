@@ -9,7 +9,7 @@ Use this skill when reading source is not enough and behavior needs evidence.
 
 ## Boundary
 
-Experiments support `analysis`. They are not raw generation and not production changes unless the user explicitly asks.
+Experiments support `analysis`. Analysis remains the external-facing place for Claude Code behavior evidence, verification notes, and unresolved questions. Build-along should only receive experiment results when they validate a `mini-cc` lesson implementation or command path. Experiments are not raw generation and not production changes unless the user explicitly asks.
 
 ## Workflow
 
@@ -35,30 +35,13 @@ Experiments support `analysis`. They are not raw generation and not production c
    - Do not over-interpret setup failures.
 
 6. **Feed evidence back**
-   - Update the relevant analysis document or create an experiment note under:
-
-```text
-docs/wiki-source/cc/experiments/
-```
-
-## Experiment Note Shape
-
-```markdown
-# Experiment: <主题>
-
-## Hypothesis
-## Source Context
-## Setup
-## Steps
-## Observations
-## Result
-## Impact on Analysis
-## Cleanup
-```
+   - Update the relevant active analysis document when the evidence clarifies Claude Code behavior, protocol, state flow, or implementation guidance.
+   - Update build-along only when the experiment verifies an internal `mini-cc` lesson, script, or implementation boundary.
+   - If the evidence is temporary or too detailed for the main narrative, summarize it in the analysis `Verification` or `待验证` section rather than creating a new `docs/wiki-source/cc/` subdirectory.
 
 ## Safety Rules
 
 - Do not run destructive commands.
 - Do not modify `JOB-WIKI/raw`.
-- Do not create `docs/wiki-source/cc/raw/` unless the user explicitly asks for raw / JOB-WIKI source / ingest packaging.
+- Do not create `docs/wiki-source/cc/raw/`.
 - If temporary edits are made, report them and clean them up unless kept intentionally.

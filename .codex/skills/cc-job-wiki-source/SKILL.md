@@ -1,13 +1,13 @@
 ---
 name: cc-job-wiki-source
-description: Generate JOB-WIKI raw source documents from mature hope-cc analysis and build-along materials. Use only when the user explicitly asks to generate raw, package JOB-WIKI source, prepare ingest material, archive a completed study, or copy material into JOB-WIKI/raw.
+description: Package mature hope-cc analysis/build-along material for JOB-WIKI only when the user explicitly asks for raw, JOB-WIKI source, ingest material, or copying material into JOB-WIKI/raw. Do not create local docs/wiki-source/cc/raw files.
 ---
 
 # CC JOB-WIKI Source Writer
 
 Use this skill only on explicit user request.
 
-Default project work is to improve `analysis` and `build-along`. Do not run this workflow just because a lesson is complete or an analysis is mature.
+Default project work is to improve `analysis` and `build-along`. Do not run this workflow just because a lesson is complete or an analysis is mature. Active `analysis` documents are external-facing and expected to be ingest-ready source; build-along documents are internal `mini-cc` lesson records. Raw packaging is exceptional and explicit.
 
 ## Inputs
 
@@ -17,10 +17,9 @@ Gather existing material first:
 docs/wiki-source/cc/analysis/<topic>.md
 docs/build-along/cc/<lesson>.md
 mini-cc source files
-docs/wiki-source/cc/experiments/<topic>.md
 ```
 
-If analysis is weak or missing, improve analysis before writing raw.
+If analysis is weak or missing, improve analysis before writing any JOB-WIKI package. Do not substitute build-along for analysis when the requested output needs an external implementation guide.
 
 Also read the target JOB-WIKI conventions before writing:
 
@@ -33,13 +32,7 @@ For `project-cc` materials, inspect 2-3 nearby `raw/Projects/*` examples and fol
 
 ## Output Locations
 
-Draft raw candidate locally:
-
-```text
-docs/wiki-source/cc/raw/YYYY-MM-DD-claude-code-<topic-slug>.md
-```
-
-Only copy to JOB-WIKI when the user explicitly asks:
+Do not create `docs/wiki-source/cc/raw/`. If the user explicitly asks to create JOB-WIKI raw, write to the requested JOB-WIKI target, normally:
 
 ```text
 C:\dev\workspace\h0pe\JOB-WIKI\raw\Projects\cc\
@@ -79,8 +72,8 @@ The exact headings may vary by mechanism. Prefer readable source value over temp
 - Write in simplified Chinese.
 - Make the document self-contained; JOB-WIKI should not need conversation history.
 - Ground mechanism claims in source paths.
-- Preserve learning narrative and design derivation.
-- Explain how Claude Code facts became `mini-cc` choices.
+- Preserve learning narrative and design derivation when the user asks for project-internal source.
+- For external technical schemes, keep the analysis-style external implementation framing instead of forcing `mini-cc` course structure.
 - Do not assume access to existing JOB-WIKI wiki pages.
 - Candidate mapping is a short end section, not the document body.
 - Avoid `Entry Candidate`, `Suggested Page`, `Ingest Priorities`, and other operation-list language in the main body.
@@ -95,4 +88,4 @@ The exact headings may vary by mechanism. Prefer readable source value over temp
 - Practice actions are written in first person where useful.
 - Weak spots are marked.
 - Candidate wiki objects are listed briefly near the end.
-- The target raw path is noted, but the file is not copied to JOB-WIKI unless explicitly requested.
+- The target JOB-WIKI path is explicit, and no local `docs/wiki-source/cc/raw/` file is created.

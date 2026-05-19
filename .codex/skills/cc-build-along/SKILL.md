@@ -5,13 +5,13 @@ description: Implement or evolve mini-cc from a Claude Code mechanism, maintaini
 
 # CC Build Along
 
-Use this skill to turn a source-backed mechanism into runnable `mini-cc` code and a development record.
+Use this skill to turn a source-backed mechanism into runnable `mini-cc` code and a course-oriented development record.
 
 ## Boundary
 
 `AGENTS.md` owns global product rules. This skill owns implementation workflow only.
 
-Default outputs are `mini-cc` changes and `docs/build-along/cc/`. Do not generate raw unless the user explicitly asks for raw / JOB-WIKI source / ingest packaging.
+Default outputs are `mini-cc` changes and `docs/build-along/cc/`. Build-along is an internal project document: it exists to guide this repository's learning and construction process, not to explain the full Claude Code mechanism to external implementers. It is the project-internal place for lesson structure, `mini-cc` implementation choices, `Lxx-Sxx` walkthroughs, verification commands, and learning frontier. Do not generate raw unless the user explicitly asks for raw / JOB-WIKI source / ingest packaging.
 
 Only update build-along when the turn changes `mini-cc` code, lesson comments, scripts, verification commands, or implementation boundaries. If the user is only clarifying runtime behavior or asking a mechanism question after coding is complete, update the relevant analysis document instead of build-along.
 
@@ -19,8 +19,10 @@ Only update build-along when the turn changes `mini-cc` code, lesson comments, s
 
 1. **Start from analysis**
    - Read or create the relevant `docs/wiki-source/cc/analysis/<topic>.md`.
-   - Identify the source-confirmed boundaries to preserve in `mini-cc`.
-   - Keep broad mechanism explanation in analysis, not build-along.
+   - Treat analysis as the external mechanism source: it should explain Claude Code behavior and reproducible design without depending on `mini-cc`.
+   - Identify which source-confirmed boundaries should be simplified into `mini-cc`.
+   - Keep broad mechanism explanation in analysis; use build-along to record how the mechanism becomes a lesson and runnable teaching implementation.
+   - Do not lower the analysis quality bar by moving project-internal lesson notes into it; put those notes in build-along.
 
 2. **Choose the minimal learning implementation**
    - Keep the feature small and runnable.
@@ -46,17 +48,20 @@ docs/build-along/cc/<lesson>.md
 ```
 
    - Record what was built, files changed, implementation steps, how to run, verification, differences from Claude Code, and annotated walkthrough.
-   - Link to analysis for mechanism detail instead of duplicating it.
+   - Explain the lesson sequence: why each `Lxx-Sxx` step exists, what source boundary it preserves, and what simplification was made for learning.
+   - Link to analysis for external mechanism detail instead of duplicating it.
+   - Keep the document useful to future maintainers of this repo: concrete paths, commands, lesson decisions, and next steps matter more here than polished external exposition.
 
-6. **Update learning map**
-   - Record completed scope and new frontier.
-   - Do not prefill raw paths.
+6. **Record next frontier**
+   - Record completed scope and next learning frontier in the build-along document.
+   - Do not create `docs/wiki-source/cc/raw/`.
 
 ## Build-Along Shape
 
 ```markdown
 # Lesson <NN>: <机制> Build-Along
 
+## Lesson Goal
 ## What We Built
 ## Source-To-Design Derivation
 ## Files Changed
@@ -89,6 +94,7 @@ mini-cc/src/commands/
 ## Done Criteria
 
 - Relevant Claude Code source was inspected or linked from analysis.
+- Build-along remains an internal learning/build document and does not replace the external analysis.
 - `mini-cc` behavior is runnable or explicitly marked design-only.
 - Code comments include required `Lxx-Sxx` steps.
 - Build-along includes `Annotated Code Walkthrough`.

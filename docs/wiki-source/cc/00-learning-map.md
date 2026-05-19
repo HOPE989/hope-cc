@@ -186,6 +186,8 @@ frontier 分类：
 | Anthropic Provider + Bash | 完成 | `docs/wiki-source/cc/analysis/claude-code-anthropic-provider-tool-use.md` | `docs/build-along/cc/02-anthropic-provider-bash.md` | `docs/wiki-source/cc/raw/2026-05-15-claude-code-anthropic-provider-bash.md` |
 | Permission / Tool Safety | 完成 | `docs/wiki-source/cc/analysis/claude-code-permission-tool-safety.md` | `docs/build-along/cc/03-permission-tool-safety.md` | `docs/wiki-source/cc/raw/2026-05-15-claude-code-permission-tool-safety.md` |
 | Streaming Provider | 完成 | `docs/wiki-source/cc/analysis/claude-code-streaming-provider.md` | `docs/build-along/cc/04-streaming-provider.md` | `docs/wiki-source/cc/raw/2026-05-18-claude-code-streaming-provider.md` |
+| Skill Tool Result | 追问已补充 | `docs/wiki-source/cc/analysis/claude-code-skill-tool-result.md` | 未修改 mini-cc，不更新 | 仅用户明确要求时生成 |
+| Skills Technical Scheme | 方案已补充 | `docs/wiki-source/cc/analysis/claude-code-skills-technical-scheme.md` | 未修改 mini-cc，不更新 | 仅用户明确要求时生成 |
 | Tool Dispatcher | 待开始 | `docs/wiki-source/cc/analysis/claude-code-tool-dispatcher.md` | 待定 | 仅用户明确要求时生成 |
 
 ## Candidate JOB-WIKI Mapping
