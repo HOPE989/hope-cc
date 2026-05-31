@@ -6,7 +6,7 @@
 
 当前状态：
 
-- 已完成节点：`Agent Loop`、`Anthropic Provider + Bash`、`Permission / Tool Safety`、`Streaming Provider`
+- 已完成节点：`Agent Loop`（已在 2026-05-31 深化为单次 loop 源码机制分析）、`Anthropic Provider + Bash`、`Permission / Tool Safety`、`Streaming Provider`
 - 当前推荐节点：`Tool Dispatcher`
 - `mini-cc` 状态：已完成第一课最小 agent loop、第二课 Anthropic-compatible Messages API、第三课最小工具权限层、第四课 provider 内 streaming 聚合；现在真实模型的 stream chunk 会先聚合成完整 `ContentBlock[]`，再交给既有 query loop
 - 文档状态：Agent Loop、Anthropic Provider、Permission / Tool Safety、Streaming Provider 已有 analysis / build-along / raw；后续主题 raw 仍只在用户明确要求时生成
@@ -44,11 +44,11 @@ frontier 分类：
 
 | 项目 | 内容 |
 |---|---|
-| 节点 | Streaming Provider |
-| 核心问题 | Anthropic streaming API 连续吐出 chunk 时，Claude Code 如何把 `text_delta` 和 `input_json_delta` 聚合成完整 assistant content block？ |
-| 源码结论 | Claude Code 在 provider 层使用 raw stream，自行累加 `content_block_delta`；`tool_use.input` 在 streaming 阶段先是字符串，`content_block_stop` 时经 `normalizeContentFromAPI()` 解析成对象。`query.ts` 仍然按完整 assistant content 中的 `tool_use` 判断 follow-up。 |
-| mini-cc 结果 | Lesson 04 从既有 `main.ts -> QueryEngine -> queryLoop -> provider` 路径进入，在 `AnthropicMessagesProvider` 内新增 streaming SSE parser、event reducer、`inputJson` 聚合和非 streaming fallback；`queryLoop` 不解析 chunk，只消费完整 `ContentBlock[]`。 |
-| 注释路径 | `L04-S01` 到 `L04-S09` |
+| 节点 | Agent Loop 深度复盘 |
+| 核心问题 | Claude Code 在 `queryLoop()` 的一次 `while (true)` 迭代中，从 transcript 投影到模型调用、工具执行、`tool_result` 回填和下一轮 state 更新，具体做了哪些工程动作？ |
+| 源码结论 | `query()` 是事件流 async generator；`queryLoop()` 每轮先生成 `messagesForQuery` 并做预算 / snip / microcompact / collapse / autocompact，再通过 provider 生成 assistant messages。是否继续不依赖 `stop_reason`，而是扫描 assistant content 中的 `tool_use`；工具执行进入 `services/tools`，所有成功、拒绝、异常和中断都要闭合为 user-side `tool_result`，最后写回下一轮 `state.messages`。 |
+| mini-cc 结果 | 本轮只深化 analysis，未修改 `mini-cc`，因此不更新 build-along。 |
+| 注释路径 | 不适用 |
 | 后续牵引 | Tool Dispatcher、StreamingToolExecutor、Permission Hooks、Context / Compaction |
 
 ## Current Node Evidence
@@ -182,7 +182,7 @@ frontier 分类：
 
 | 主题 | 状态 | analysis | build-along | raw |
 |---|---|---|---|---|
-| Agent Loop | 完成 | `docs/wiki-source/cc/analysis/claude-code-agent-loop.md` | `docs/build-along/cc/01-agent-loop.md` | `docs/wiki-source/cc/raw/2026-05-14-claude-code-agent-loop.md` |
+| Agent Loop | 完成；2026-05-31 已深化 analysis | `docs/wiki-source/cc/analysis/claude-code-agent-loop.md` | `docs/build-along/cc/01-agent-loop.md` | `docs/wiki-source/cc/raw/2026-05-14-claude-code-agent-loop.md` |
 | Anthropic Provider + Bash | 完成 | `docs/wiki-source/cc/analysis/claude-code-anthropic-provider-tool-use.md` | `docs/build-along/cc/02-anthropic-provider-bash.md` | `docs/wiki-source/cc/raw/2026-05-15-claude-code-anthropic-provider-bash.md` |
 | Permission / Tool Safety | 完成 | `docs/wiki-source/cc/analysis/claude-code-permission-tool-safety.md` | `docs/build-along/cc/03-permission-tool-safety.md` | `docs/wiki-source/cc/raw/2026-05-15-claude-code-permission-tool-safety.md` |
 | Streaming Provider | 完成 | `docs/wiki-source/cc/analysis/claude-code-streaming-provider.md` | `docs/build-along/cc/04-streaming-provider.md` | `docs/wiki-source/cc/raw/2026-05-18-claude-code-streaming-provider.md` |
