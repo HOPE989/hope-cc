@@ -1793,3 +1793,210 @@ async function buildContextForTurn(
 | 大工具结果只截断 | 失去可追溯性，模型无法知道完整结果在哪里。 | 写对象存储/文件，消息中保留预览和引用。 |
 | 不保存 replacement 决策 | resume 后同一结果可见性变化，cache 和行为不稳定。 | 保存 `content_replacements`。 |
 | 忽略 provider normalization | DB 消息看似合理，API 请求却因 role/tool/media 规则失败。 | 引入独立 `ProviderMessageNormalizer`。 |
+
+### B.9 关于当前用户消息和历史消息的关键澄清
+
+如果类比 Claude Code，数据库项目里需要分清三件事：
+
+```text
+DB 中的完整 messages
+  ≈ Claude Code 的 durable transcript / state.messages 的来源
+
+本轮候选消息数组
+  ≈ history + 当前 turn messages
+
+本轮模型内部投影
+  ≈ messagesForQuery
+```
+
+#### B.9.1 `UserContext` 不是数据库 messages
+
+`UserContext` 不是你项目里数据库存的多轮对话消息。
+
+更准确的映射是：
+
+| 你的项目概念 | Claude Code 类比 | 含义 |
+|---|---|---|
+| 数据库存的多轮对话消息 | `messages` / `transcript` / `state.messages` | 历史事实源：用户说过什么、assistant 回过什么、工具调用和结果是什么。 |
+| 每轮处理后的历史窗口 | `messagesForQuery` 的一部分 | 从历史 messages 投影出来的本轮候选上下文。 |
+| 用户/项目长期指令 | `userContext` | 例如用户偏好、项目规则、当前日期、长期记忆等。 |
+| 最终发给模型的消息 | provider messages | `messagesForQuery + userContext meta reminder` 再 normalize 后的结果。 |
+
+Claude Code 的 `userContext` 主要来自 `getUserContext()`，包括 `CLAUDE.md` / memory files 和 `currentDate`。它会通过 `prependUserContext(messagesForQuery, userContext)` 变成一条前置 meta user message。
+
+所以在外部系统中：
+
+```text
+数据库 messages 不是 UserContext；
+UserContext 是额外的用户/项目/租户/环境级上下文；
+最终 provider messages 由处理后的历史 messages、当前 turn、UserContext、SystemContext 和 attachments 共同组成。
+```
+
+#### B.9.2 重建出来的 history messages 什么时候等价于 `messagesForQuery`
+
+如果你只是从数据库读取：
+
+```sql
+select * from messages where session_id = ? order by seq;
+```
+
+这更像 Claude Code 的 transcript / `state.messages`，不是 `messagesForQuery`。
+
+只有当你重建 history 时已经做了以下处理，才可以把它类比为 `messagesForQuery` 的历史部分：
+
+- 找到最近 compact boundary。
+- 保留 compact summary。
+- 保留最近未压缩 tail。
+- 重放 content replacement 决策。
+- 大工具结果替换成预览和引用。
+- 恢复当前任务相关 attachment。
+- 保证 tool_use/tool_result 不被切断。
+- 控制 token 预算。
+
+也就是说：
+
+```text
+原始 DB history = transcript
+处理后的本轮可发送 history = messagesForQuery 的历史部分
+最终发给模型的 messages = prepend userContext 后再 normalize 的 provider messages
+```
+
+#### B.9.3 Claude Code 会维护原始对话数组，但注入上下文的是处理后的投影视图
+
+Claude Code 里确实维护一个原始会话状态：
+
+```text
+state.messages
+```
+
+它像当前 loop 持有的 transcript / 历史事实源，里面有用户消息、assistant 消息、tool result、attachment、compact boundary、summary 等。
+
+但模型每轮看到的不是直接的 `state.messages`。`queryLoop()` 会先生成：
+
+```text
+messagesForQuery
+```
+
+处理包括：
+
+- 从最近 compact boundary 后开始取。
+- 应用大工具结果预算。
+- 可能做 snip。
+- 可能做 microcompact。
+- 可能做 context collapse。
+- 可能触发 autocompact，并替换成 compact summary + 保留尾部 + 恢复附件。
+- 更新 `toolUseContext.messages = messagesForQuery`。
+
+然后真正请求模型时，还会继续：
+
+```text
+prependUserContext(messagesForQuery, userContext)
+-> normalizeMessagesForAPI(...)
+-> ensureToolResultPairing(...)
+-> provider messages
+```
+
+所以外部系统的对应关系是：
+
+```text
+数据库里的完整 messages
+  ≈ Claude Code state.messages / transcript
+
+每轮从数据库历史处理出来的上下文窗口
+  ≈ Claude Code messagesForQuery
+
+最终发给模型 API 的 messages
+  ≈ prependUserContext + normalizeMessagesForAPI 后的 provider messages
+```
+
+#### B.9.4 当前用户消息是单独追加，还是和历史一起处理
+
+更准确的答案是：
+
+```text
+当前消息会和历史消息一起进入同一条处理管线；
+但多数处理主要影响历史部分，当前消息通常作为 protected recent tail 保留。
+```
+
+Claude Code 的结构更像：
+
+```text
+state.messages = history + current turn messages
+
+messagesForQuery =
+  getMessagesAfterCompactBoundary(state.messages)
+  -> applyToolResultBudget(...)
+  -> snip / microcompact / context collapse
+  -> autocompact if needed
+```
+
+而不是：
+
+```text
+只处理 history
++ 原样追加 current message
+```
+
+但“当前消息一起处理”不代表它会被随意压缩或裁剪。通常：
+
+| 机制 | 对当前用户消息的影响 |
+|---|---|
+| compact boundary | 只影响旧 boundary 前消息，当前消息保留。 |
+| tool result budget | 主要处理工具结果，当前普通 user message 通常不受影响。 |
+| microcompact | 主要处理旧工具结果，当前普通 user message 通常不受影响。 |
+| autocompact | 如果触发，会生成 summary，但应保留最近尾部，当前用户意图必须保留。 |
+| provider normalize | 当前消息一定参与，例如连续 user/meta attachment 合并、content block 规范化。 |
+
+外部系统可以这样实现：
+
+```ts
+const history = await loadDbMessages(sessionId)
+const currentTurnMessages = normalizeCurrentUserInput(input)
+
+const candidateMessages = [
+  ...history,
+  ...currentTurnMessages,
+]
+
+const messagesForQuery = await projectMessages(candidateMessages, {
+  protectedTailMessageIds: currentTurnMessages.map(m => m.id),
+})
+
+const providerMessages = normalizeForProvider(
+  prependUserContext(messagesForQuery, userContext),
+)
+```
+
+这里的 `protectedTailMessageIds` 表示：当前 turn 参与整体投影，但压缩、裁剪、summary 切片时要保护它，避免模型丢失本轮用户真实意图。
+
+#### B.9.5 当前 turn 不只是一个原始字符串
+
+当前用户输入进入上下文前，也会先被规范化成内部消息：
+
+```text
+raw user input
+  -> text user message
+  -> optional attachment messages
+  -> optional slash/skill command context
+  -> optional file/image/resource context
+```
+
+因此，不建议把当前消息理解成“原始字符串原封追加”。更准确是：
+
+```text
+当前 turn 规范化后的内部 messages
+追加到历史 transcript 后，
+再一起进入投影和 provider normalization。
+```
+
+如果当前用户消息带文件引用或附件，它可能变成多条内部消息：
+
+```ts
+const currentTurnMessages = [
+  createUserMessage(userText),
+  createAttachmentMessage(fileContext),
+  createAttachmentMessage(selectedIdeLines),
+]
+```
+
+这些消息都属于本轮 protected tail，但在 provider 前仍会被 `normalizeForProvider()` 合并、渲染或过滤。
