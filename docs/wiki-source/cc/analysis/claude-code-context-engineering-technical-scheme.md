@@ -113,6 +113,8 @@ Claude Code 在每次模型调用前动态构造 API 视图：
 并用 meta user message / attachment / compact summary 维持行为连续性。
 ```
 
+> 读书笔记：`meta user message` 建议译为“系统注入的 user 角色消息”，`meta user reminder` 建议译为“系统注入的 user 角色提醒消息”。拆开看：`user` 指 provider messages 里的角色是 `user`；`message` 指它仍是一条会发给模型的消息；`reminder` 指内容语气是提醒模型参考上下文；`meta` 指来源和性质是运行时注入的元信息，不是用户直接输入。对比普通 `user message` 只是辅助理解：二者发给模型时都可以是 `user` 角色，但 `meta user message` 会在内部消息上标记 `isMeta: true`，常用 `<system-reminder>` 包住 `CLAUDE.md`、当前日期、memory 等 `userContext`，提醒模型可参考这些信息，但不要把它当成用户刚刚提出的新请求。
+
 ### 0.3 最重要的工程取舍
 
 | 取舍 | Claude Code 的做法 | 外部系统启示 |
@@ -2000,3 +2002,184 @@ const currentTurnMessages = [
 ```
 
 这些消息都属于本轮 protected tail，但在 provider 前仍会被 `normalizeForProvider()` 合并、渲染或过滤。
+
+## 附录 C：后续子专题拆分指南
+
+本附录记录本文的定位和后续 analysis 拆分边界。它不是新增源码结论，而是用于指导后续任务规划：本文负责保证 Claude Code 上下文工程主线完整，具体机制细节应拆成专题 analysis 逐步深挖。
+
+### C.1 本文定位：总方案 / 母文档
+
+本文是 Claude Code 上下文工程的总方案或母文档。它要回答的是：
+
+```text
+Claude Code 的上下文体系由哪些层组成，
+每轮模型调用前上下文如何被投影、压缩、恢复、规范化和观测，
+外部系统复现这套体系时需要哪些模块边界。
+```
+
+本文需要保持主线完整，但不追求把每个子机制写到最终实现细节。后续如果要回答“某个机制源码上到底如何做、有哪些边界条件、外部系统如何实现到可运行”，应创建或补充对应专题 analysis，并从本文链接过去。
+
+### C.2 总文档必须保住的主线
+
+无论后续拆出多少专题，本文都应持续维护这条总链路：
+
+```text
+Context Producers
+  system prompt / system context / user context
+  memory / files / attachments / skills / plan / task / MCP / hooks / settings
+        |
+        v
+Transcript and Turn State
+  raw session messages + current turn normalized messages
+        |
+        v
+Message Projection
+  compact boundary
+  -> tool result budget
+  -> snip / microcompact / context collapse
+  -> autocompact / manual compact / session memory compact / reactive compact
+        |
+        v
+Post-Compact Continuity
+  compact summary + recent tail + restored files / skills / plan / task / hooks
+        |
+        v
+Provider Request
+  prepend user context
+  -> normalize messages for API
+  -> enforce tool-use/tool-result invariants
+  -> system prompt / tool schema / cache options
+        |
+        v
+Observability and Recovery
+  /context, token accounting, session resume, transcript persistence
+```
+
+这条主线是本文的职责。专题 analysis 的职责是把其中某个节点拆成源码级机制、状态流、失败模式、测试计划和外部复现方案。
+
+### C.3 子专题覆盖矩阵
+
+如果目标是通过逐步实施专题 analysis，最终复现一个 Claude Code-like 的上下文体系，后续子专题至少应覆盖以下矩阵。
+
+#### C.3.1 总清单与边界专题
+
+| 子专题 | 必须回答的问题 |
+|---|---|
+| Context Mechanism Inventory | Claude Code 里所有会生产、修改、恢复、压缩、隐藏、观测或约束模型可见上下文的机制清单。 |
+| 上下文层级与信任边界 | system prompt、system context、user context、attachment、tool result、transcript、provider messages 的职责和禁止混写边界。 |
+| Agent loop state model | `State`、`messages`、`toolUseContext`、turn/recovery/compact tracking 各自保存什么，哪些属于 transcript，哪些属于 loop 控制态。 |
+| agent loop 与 context pipeline 的边界 | 哪些发生在 pre-agent-loop，哪些发生在 query loop，每轮迭代中哪些状态会被推进到下一轮。 |
+
+#### C.3.2 核心请求构建链路
+
+| 子专题 | 必须回答的问题 |
+|---|---|
+| `messagesForQuery` 投影链路 | transcript 如何经过 compact boundary、tool result budget、snip、microcompact、context collapse、autocompact 变成本轮内部 API 视图。 |
+| provider normalization | `normalizeMessagesForAPI()` 如何处理 attachment、连续 user message、assistant sibling、tool-use/tool-result pairing、thinking block 和 provider 协议不变量。 |
+| user context / meta reminder 注入 | `CLAUDE.md`、日期和用户上下文为什么作为 meta user reminder 前置，而不是混入 system prompt 或普通 user message。 |
+| system prompt / system context / cache 稳定性 | system context 如何追加到 system prompt，tool schema 和 system prompt 分块如何影响 prompt cache 稳定性。 |
+
+#### C.3.3 Context Producers：上下文来源体系
+
+| 子专题 | 必须回答的问题 |
+|---|---|
+| `CLAUDE.md` / memory 文件体系 | 发现顺序、优先级、include、条件规则、缓存、禁用开关、compact 后重新加载。 |
+| attachment 总线 | typed attachment 如何被创建、去重、排序、渲染成 meta messages，以及哪些 attachment 只在特定阶段出现。 |
+| synthetic file context | 文件内容如何被合成、引用、恢复，以及它和 Read/Edit/Grep/Glob 等工具状态的关系。 |
+| 工具结果与文件状态 | 工具执行结果、文件读取缓存、编辑结果和后续上下文之间如何关联。 |
+| Plan / Todo / task 状态 | 计划、待办、异步任务状态如何进入上下文、如何 compact 后恢复、如何避免重复注入。 |
+| Skills lifecycle | skill listing、skill discovery、invoked skills、compact 后恢复、预算截断和作用域过滤。 |
+| MCP context | MCP resources、MCP tools、外部服务上下文和 pending MCP servers 如何影响上下文与能力可见性。 |
+| IDE / editor context | 当前文件、选区、诊断等编辑器侧上下文入口是否存在、如何注入、如何与用户显式附件区分。 |
+| hooks context | hook 产物如何注入、compact 后如何恢复、信任边界如何隔离。 |
+| settings / permission / model profile | 权限模式、配置、模型选择、thinking 设置、tool 可用性如何改变上下文和工具 schema。 |
+
+#### C.3.4 Token 治理与局部压缩
+
+| 子专题 | 必须回答的问题 |
+|---|---|
+| tool result storage | 大工具结果如何落盘、预览替换、resume 后如何重建 replacement state。 |
+| tool result budget | 每条 API-level user message 的工具结果预算如何计算，为什么要先于 microcompact 运行。 |
+| Microcompact | compactable tools、time-based microcompact、cached microcompact、cache edits、boundary message、warning suppression、状态 reset。 |
+| snip compact | snip 在 microcompact 前运行的原因、如何释放 token、如何影响 autocompact threshold；具体算法以源码可见性为准。 |
+| context collapse | collapse 为什么在 autocompact 前运行，如何保存 granular context；具体算法以源码可见性为准。 |
+
+#### C.3.5 Full Compaction 家族
+
+| 子专题 | 必须回答的问题 |
+|---|---|
+| manual `/compact` | 手动 compact 的入口、custom instructions、session memory compact 优先级、compact 前 microcompact。 |
+| Autocompact | 阈值、buffer、禁用条件、reactive-only 抑制、context-collapse 抑制、session memory compact 优先、失败熔断。 |
+| session memory compact | 外部会话记忆如何替代重复 summarization，如何选择保留尾部，如何维护 API pairing 不变量。 |
+| compact conversation | summary prompt、fork summarizer、streaming summarizer、PTL retry、summary message、messagesToKeep。 |
+| reactive compact | prompt-too-long 后如何恢复、与 autocompact / context collapse 的边界；具体实现以源码可见性为准。 |
+| post-compact cleanup | microcompact state、memory cache、system prompt sections、classifier approvals、context collapse state 如何清理。 |
+
+#### C.3.6 Compact 后恢复与长会话连续性
+
+| 子专题 | 必须回答的问题 |
+|---|---|
+| post-compact message build | compact boundary、summary、kept messages、attachments、hook results 的顺序和语义。 |
+| 文件恢复 | 最近读过的文件如何恢复，哪些文件只保留引用，memory / plan 文件为何要特殊处理。 |
+| Skills 恢复 | invoked skills 如何恢复，skill listing 为什么不能无限重注入。 |
+| Plan / task / async agent 恢复 | 计划文件、plan mode、task 状态、异步 agent 结果如何在 compact 后维持连续性。 |
+| hook 恢复 | compact hooks / session start hooks 如何作为恢复上下文进入后续 turn。 |
+
+#### C.3.7 会话持久化、恢复与多 agent
+
+| 子专题 | 必须回答的问题 |
+|---|---|
+| transcript persistence | 原始 messages、compact boundary、summary、attachment、tool result replacement record 应如何持久化。 |
+| session resume / conversation recovery | resume 后如何重建 messagesForQuery、content replacement、context collapse commits/snapshot 和 provider pairing。 |
+| subagent context isolation | 子 agent / forked agent 如何继承、隔离、compact、回填上下文。 |
+| background task / async task context | 后台任务、任务摘要、task status 如何影响主会话上下文。 |
+
+#### C.3.8 可观测性与安全边界
+
+| 子专题 | 必须回答的问题 |
+|---|---|
+| `/context` API view | `/context` 为什么显示投影后的 API view，而不是 raw transcript。 |
+| token accounting | system、tools、MCP、memory、skills、messages、autocompact buffer、manual compact buffer 如何分类估算。 |
+| context warnings | warning、error、blocking limit、autocompact threshold、compact suggestions 如何触发。 |
+| prompt cache observability | cache read / cache creation / cache deletion / cache break detection 如何与 context 改写关联。 |
+| context safety | memory、文件、hooks、tool result、MCP resource 如何保持不同信任层，避免伪装成用户指令或工具协议事实。 |
+
+### C.4 推荐实施顺序
+
+后续实施子专题时，建议按“先闭合主线，再补来源，再补压缩细节，最后补观测和恢复”的顺序推进：
+
+1. **Context Mechanism Inventory**：先列清所有上下文机制，建立覆盖表，避免后续漏掉 microcompact、autocompact、session resume、MCP、hooks 等边界。
+2. **Agent loop state model**：先规范 `State`、transcript、`toolUseContext`、turn tracking、compact/recovery flags 的边界，避免把所有上下文状态都塞进 messages。
+3. **`messagesForQuery` 投影链路**：这是上下文工程中轴，确认 transcript 到内部 API view 的完整顺序。
+4. **provider normalization 与协议不变量**：确保外部系统知道 `messagesForQuery` 不是最终 provider messages，避免 tool pairing 和 attachment 渲染错误。
+5. **Context Producers 总表与 attachment 总线**：把 memory、files、skills、plan、task、MCP、IDE、hooks、settings 归位。
+6. **tool result storage 与 tool result budget**：先解决大输出持久化和预算，因为它是 microcompact 和 full compact 的前置治理。
+7. **Microcompact 专题**：单独研究 time-based 和 cached microcompact，明确它不总结对话，只治理旧工具结果和 cache edits。
+8. **Autocompact 专题**：单独研究阈值、buffer、禁用条件、session memory 优先、context-collapse 抑制和失败熔断。
+9. **manual compact / compact conversation / session memory compact**：补齐 full compaction 家族的 summary、保留尾部和 API invariant。
+10. **post-compact restoration**：研究文件、skills、plan、task、hooks 如何恢复工作连续性。
+11. **session resume / persistence / subagent context**：补齐长会话、多 agent、恢复和审计。
+12. **`/context`、token accounting、warnings、cache observability**：补齐可观测性，使外部系统能解释上下文窗口构成。
+13. **context collapse / snip compact / reactive compact**：这些机制受源码可见性和 feature gate 影响，先在总链路中保留边界，待源码确认后补专题细节。
+
+### C.5 子专题完成标准
+
+每篇子专题 analysis 完成时，至少满足：
+
+- 明确它补的是 C.3 覆盖矩阵中的哪一格。
+- 给出源码路径、关键符号、调用链、状态流或数据流。
+- 说明该机制的输入、输出、状态、生命周期和与上下游专题的接口。
+- 给出外部系统最小可复现设计：模块职责、核心数据结构、关键 API、测试计划。
+- 明确失败模式和安全边界，尤其是 tool-use/tool-result pairing、meta context、cache 稳定性、compact 后恢复。
+- 明确区分 `源码确认`、`合理推断`、`待验证`。
+- 不写 `mini-cc` lesson、课程注释或 build-along walkthrough；这些属于 build-along。
+
+### C.6 拆分原则
+
+后续新增专题 analysis 时，遵循这些原则：
+
+- 总文档只保主线和索引，不承载每个细机制的全部源码细节。
+- 子专题必须围绕可验证机制拆分，避免按宽泛名词堆目录。
+- 子专题之间允许交叉引用，但不要互相替代：例如 `messagesForQuery` 可以说明 microcompact 的位置，Microcompact 专题负责解释具体实现。
+- 如果源码不可见或 feature-gated，只写已确认的调用位置、顺序和边界，把具体算法标为 `待验证`。
+- 每完成一个专题，应回到本文检查主线、覆盖矩阵和链接是否需要更新。
