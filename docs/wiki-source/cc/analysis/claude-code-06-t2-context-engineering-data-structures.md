@@ -95,6 +95,11 @@ messagesForQuery
   -> autocompact / buildPostCompactMessages()
         |
         v
+provider adapter input
+  messages = prependUserContext(messagesForQuery, userContext)
+  systemPrompt = appendSystemContext(systemPrompt, systemContext)
+        |
+        v
 provider API messages
   normalizeMessagesForAPI()
   -> ensureToolResultPairing()
@@ -113,6 +118,7 @@ next State.messages =
 - `QueryParams.messages` 是入口消息。
 - `State.messages` 是 `queryLoop()` 当前事实源。
 - `messagesForQuery` 是每轮模型调用前的投影视图。
+- provider adapter input 会在 `messagesForQuery` 前置 `userContext`，并把 `systemContext` 合入 system prompt。
 - provider API messages 是 `normalizeMessagesForAPI()` 和 `ensureToolResultPairing()` 之后的 wire 形态。
 - `ToolUseContext.messages` 每轮被设置成 `messagesForQuery`。
 - 有工具调用时，下一轮 `State.messages` 不是简单 append 到旧 `messages`，而是 `messagesForQuery + assistantMessages + toolResults`。
@@ -160,6 +166,8 @@ each while iteration
   -> messagesForQuery from State.messages
   -> context projection transforms
   -> toolUseContext.messages = messagesForQuery
+  -> prependUserContext(messagesForQuery, userContext)
+  -> appendSystemContext(systemPrompt, systemContext)
   -> deps.callModel(...)
   -> assistantMessages + toolUseBlocks
 
@@ -178,7 +186,7 @@ if tool_use
 | 边界 | 源码事实 |
 |---|---|
 | `State.messages` vs `messagesForQuery` | `messagesForQuery` 每轮从 `State.messages` 投影出来，并经过 budget / compact；它不是完整历史。 |
-| `messagesForQuery` vs provider API messages | provider 前还要 `normalizeMessagesForAPI()` 和 `ensureToolResultPairing()`。 |
+| `messagesForQuery` vs provider API messages | provider 前先注入 `userContext` / `systemContext`，再做 `normalizeMessagesForAPI()` 和 `ensureToolResultPairing()`。 |
 | tool result vs attachment | 工具执行结果是 user-side message；post-tool context 如 memory/skill/queued command 可能是 `AttachmentMessage`，但最终同样进入下一轮 `toolResults` 集合。 |
 
 ## 3. 06-T2 应该交付什么
@@ -416,6 +424,7 @@ messagesForQuery = getMessagesAfterCompactBoundary(messages)
 - context collapse 在 autocompact 前执行，如果 collapse 足以降 token，就避免 single summary，见 `src/query.ts:428`。
 - autocompact 成功后，`messagesForQuery` 被替换为 `buildPostCompactMessages(compactionResult)`，见 `src/query.ts:528`。
 - 每轮最后写入 `toolUseContext.messages = messagesForQuery`，见 `src/query.ts:545`。
+- provider 调用时传入的是 `prependUserContext(messagesForQuery, userContext)`，而 system prompt 先经过 `appendSystemContext(systemPrompt, systemContext)`，见 `src/query.ts:449` 和 `src/query.ts:660`。
 
 T2 结论：
 
@@ -927,6 +936,7 @@ T2 结论：
 
 - 文件、memory、skill discovery 不是只通过 `Message[]` 表达；它们在 `ToolUseContext` 里有 session-level runtime state。
 - `MemoryPrefetch` 是 query 级 side channel：它并行搜索 relevant memories，post-tool 阶段如果已完成才消费并注入 attachment。
+- `pendingSkillPrefetch` 是 skill discovery 的 per-iteration side channel：每轮开始由 `startSkillDiscoveryPrefetch()` 启动，post-tool 阶段由 `collectSkillDiscoveryPrefetch()` 消费并注入 `AttachmentMessage`，见 `src/query.ts:331` 和 `src/query.ts:1617`。
 - 这些结构解释了为什么 Claude Code 能在 compact 后恢复“工作现场”，也解释了为什么同一 memory/skill 不会无限重复注入。
 
 ## 24. 工具结果持久化与 replacement log 结构
@@ -1164,6 +1174,8 @@ T2 结论：
 | snip / microcompact / context collapse / autocompact 顺序 | `src/query.ts:396`, `:414`, `:428`, `:453` |
 | autocompact 成功后 `buildPostCompactMessages()` | `src/query.ts:528` |
 | `toolUseContext.messages = messagesForQuery` | `src/query.ts:545` |
+| `systemContext` 合入 system prompt | `src/query.ts:449`, `src/utils/api.ts:437` |
+| `userContext` 注入 provider messages | `src/query.ts:660`, `src/utils/api.ts:449` |
 | iteration-local arrays | `src/query.ts:551` |
 | `tool_use` 扫描与 `needsFollowUp` | `src/query.ts:829` |
 | tool execution updates enter `toolResults` | `src/query.ts:1395` |
@@ -1182,6 +1194,7 @@ T2 结论：
 | `FileState` / `FileStateCache` | `src/utils/fileStateCache.ts:4`, `:30` |
 | memory / skill trigger fields | `src/Tool.ts:215`, `:222`, `:223`, `:225` |
 | `MemoryPrefetch` | `src/utils/attachments.ts:2346` |
+| skill discovery prefetch 启动 / 消费 | `src/query.ts:331`, `:1617` |
 | attachment union examples | `src/utils/attachments.ts:620` |
 | `tool_use` / `tool_result` location comment | `src/utils/attachments.ts:2460` |
 | `createCompactBoundaryMessage()` | `src/utils/messages.ts:4530` |
