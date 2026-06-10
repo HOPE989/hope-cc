@@ -113,37 +113,39 @@ Claude Code 在每次模型调用前动态构造 API 视图：
 并用 meta user message / attachment / compact summary 维持行为连续性。
 ```
 
-> 读书笔记：`meta user message` 建议译为“系统注入的 user 角色消息”，`meta user reminder` 建议译为“系统注入的 user 角色提醒消息”。拆开看：`user` 指 provider messages 里的角色是 `user`；`message` 指它仍是一条会发给模型的消息；`reminder` 指内容语气是提醒模型参考上下文；`meta` 指来源和性质是运行时注入的元信息，不是用户直接输入。对比普通 `user message` 只是辅助理解：二者发给模型时都可以是 `user` 角色，但 `meta user message` 会在内部消息上标记 `isMeta: true`，常用 `<system-reminder>` 包住 `CLAUDE.md`、当前日期、memory 等 `userContext`，提醒模型可参考这些信息，但不要把它当成用户刚刚提出的新请求。
+> `meta user message` 建议译为“系统注入的 user 角色消息”，`meta user reminder` 建议译为“系统注入的 user 角色提醒消息”。拆开看：`user` 指 provider messages 里的角色是 `user`；`message` 指它仍是一条会发给模型的消息；`reminder` 指内容语气是提醒模型参考上下文；`meta` 指来源和性质是运行时注入的元信息，不是用户直接输入。对比普通 `user message` 只是辅助理解：二者发给模型时都可以是 `user` 角色，但 `meta user message` 会在内部消息上标记 `isMeta: true`，常用 `<system-reminder>` 包住 `CLAUDE.md`、当前日期、memory 等 `userContext`，提醒模型可参考这些信息，但不要把它当成用户刚刚提出的新请求。
 
 ### 0.3 最重要的工程取舍
 
-| 取舍 | Claude Code 的做法 | 外部系统启示 |
-|---|---|---|
-| system vs user context | system context 追加到 system prompt；CLAUDE.md/date 作为 meta user reminder 前置。 | 稳定规则、运行环境、用户配置不要混成一个字符串。 |
-| transcript vs API view | UI 历史可完整保留；模型调用前从 compact boundary 后开始投影。 | “会话记录”与“本轮发送给模型的窗口”必须分离。 |
-| 大工具结果 | 过大结果写入磁盘，模型只看预览和路径；每消息聚合预算会冻结决策。 | 长输出不要直接截断丢失，也不要每轮重传全文。 |
-| 压缩 | 优先 session memory compact；否则 fork summarizer 或 streaming summarizer；压缩后构造 boundary + summary + restored attachments。 | 压缩应是状态转换，不是简单摘要文本替换。 |
-| 文件上下文 | 压缩后最多恢复近期文件，受文件数和 token 预算约束。 | 文件内容要有生命周期，不能靠模型记忆。 |
-| 技能上下文 | skill listing 不在 compact 后无限重注入；已调用 skill 内容可作为 `invoked_skills` attachment 保留。 | 能力索引和已执行指令要分开治理。 |
-| 观测 | `/context` 按 API 视图估算 token，区分 system、tools、MCP、memory、skills、messages、buffer。 | 上下文工程必须可解释，否则用户无法判断为什么会溢出。 |
+| 取舍                     | Claude Code 的做法                                                                                                      | 外部系统启示                     |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| system vs user context | system context 追加到 system prompt；CLAUDE.md/date 作为 meta user reminder 前置。                                            | 稳定规则、运行环境、用户配置不要混成一个字符串。   |
+| transcript vs API view | UI 历史可完整保留；模型调用前从 compact boundary 后开始投影。                                                                            | “会话记录”与“本轮发送给模型的窗口”必须分离。   |
+| 大工具结果                  | 过大结果写入磁盘，模型只看预览和路径；预算按聚合后的消息计算，替换决策首次确定后保持不变。                                                                        | 长输出不要直接截断丢失，也不要每轮重传全文。     |
+| 压缩                     | 压缩时会优先复用 session memory；如果不可用，再用 forked agent 生成摘要，并在失败时回退到普通流式摘要。压缩完成后，系统会按固定顺序重建上下文：压缩边界、摘要、保留的尾部消息、恢复附件和 hook 结果。 | 压缩应是状态转换，不是简单摘要文本替换。       |
+| 文件上下文                  | 压缩后最多恢复近期文件，受文件数和 token 预算约束。                                                                                        | 文件内容要有生命周期，不能靠模型记忆。        |
+| 技能上下文                  | skill listing 不在 compact 后无限重注入；已调用 skill 内容可作为 `invoked_skills` attachment 保留。                                      | 能力索引和已执行指令要分开治理。           |
+| 观测                     | `/context` 按 API 视图估算 token，区分 system、tools、MCP、memory、skills、messages、buffer。                                       | 上下文工程必须可解释，否则用户无法判断为什么会溢出。 |
 
+> 这里的 transcript 建议翻译成 **“会话记录”**，如果强调工程语义，可以写成 **“可回放会话记录”** 或 **“对话回放记录”**。
+> transcript = 系统保存下来的、能够复现和解释一轮 agent 对话过程的记录。
 ## 1. 全局心智模型 / 关键术语
 
 ### 1.1 四种上下文不要混淆
 
-| 名称 | Claude Code 对应 | 语义 | 不应该做什么 |
-|---|---|---|---|
-| `systemPrompt` | `getSystemPrompt()` + `buildEffectiveSystemPrompt()` | 产品级、模式级、agent 定义级规则。 | 不放每轮变化的大量文件正文。 |
-| `systemContext` | `getSystemContext()` | 运行环境快照，例如 git 状态、cache breaker。 | 不当作用户消息回复。 |
-| `userContext` | `getUserContext()` | 用户/项目指令和日期，最后通过 meta user reminder 注入。 | 不伪装成真实用户请求。 |
-| `attachment` | `AttachmentMessage` | 本轮或压缩后追加的服务端上下文片段，例如文件、计划、任务、skill listing。 | 不伪装成模型真实工具调用结果。 |
-| `transcript messages` | `Message[]` | UI、恢复、审计、下一轮投影的历史事实源。 | 不直接等同于 provider 请求体，也不直接等同于“上下文”。 |
-| `messagesForQuery` | `query.ts` 中的本轮投影 | 每轮实际准备送入模型的内部消息窗口。 | 不持久化为唯一历史。 |
-| `provider messages` | `normalizeMessagesForAPI()` 输出 | Anthropic Messages API 可接受的 user/assistant 消息序列。 | 不保留 UI-only / virtual / progress / 不合法 pairing。 |
+| 名称                    | Claude Code 对应                                       | 语义                                               | 不应该做什么                                          |
+| --------------------- | ---------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------- |
+| `systemPrompt`        | `getSystemPrompt()` + `buildEffectiveSystemPrompt()` | 产品级、模式级、agent 定义级规则。                             | 不放每轮变化的大量文件正文。                                  |
+| `systemContext`       | `getSystemContext()`                                 | 运行环境快照，例如 git 状态、cache breaker。                  | 不当作用户消息回复。                                      |
+| `userContext`         | `getUserContext()`                                   | 用户/项目指令和日期，最后通过 meta user reminder 注入。           | 不伪装成真实用户请求。                                     |
+| `attachment`          | `AttachmentMessage`                                  | 本轮或压缩后追加的服务端上下文片段，例如文件、计划、任务、skill listing。      | 不伪装成模型真实工具调用结果。                                 |
+| `transcript messages` | `Message[]`                                          | UI、恢复、审计、下一轮投影的历史事实源。                            | 不直接等同于 provider 请求体，也不直接等同于“上下文”。               |
+| `messagesForQuery`    | `query.ts` 中的本轮投影                                    | 每轮实际准备送入模型的内部消息窗口。                               | 不持久化为唯一历史。                                      |
+| `provider messages`   | `normalizeMessagesForAPI()` 输出                       | Anthropic Messages API 可接受的 user/assistant 消息序列。 | 不保留 UI-only / virtual / progress / 不合法 pairing。 |
 
 ### 1.2 Claude Code 的上下文不是一次性构造
 
-`getSystemContext()` 和 `getUserContext()` 都被 memoize，注释说明它们会在会话期间缓存。compaction 后会清理相关缓存，让 memory 文件和 hooks 能以 “compact” 原因重新加载。这意味着上下文工程具有生命周期：
+`getSystemContext()` 和 `getUserContext()` 都被 memoize，**注释说明它们会在会话期间缓存。compaction 后会清理相关缓存**，让 memory 文件和 hooks 能以 “compact” 原因重新加载。这意味着上下文工程具有生命周期：
 
 ```text
 session start
@@ -155,6 +157,38 @@ session start
   -> repeated query projections
 ```
 
+> **注释说明它们会在会话期间缓存。compaction 后会清理相关缓存**
+> 面试可聊的点
+
+> **post-compact restored context**
+> 
+> 可以理解成：
+> ``` text
+> 	压缩后重新补回模型继续工作所需的上下文
+> ```
+> 它不是 summary 本身。
+> 一次 compact 后，旧对话的大部分原文会被摘要替代，但模型继续干活还需要一些“现场状态”。这些状态如果只靠摘要，可能不够精确，所以系统会在 summary 后面重新注入一批附件/上下文。
+> 在 Claude Code 里，这类 restored context 大致包括：
+> ``` text
+> 	最近读过的文件内容
+> 	当前 plan / todo 状态
+> 	plan mode 指令
+> 	已经调用过的 skill 信息
+> 	deferred tool schemas / agent listing / MCP instructions
+> 	post-compact hook 结果
+> ```
+> 所以整个 compact 后的上下文不是：
+> ``` text
+> 	压缩后重新补回模型继续工作所需的上下文
+> ```
+> 而是：
+> ``` text
+> 	compact boundary
+> 	summary
+> 	保留的最近原始消息
+> 	restored context
+> 	hook results
+> ```
 ### 1.3 两类压缩
 
 | 类型 | 作用 | 是否总结对话 | 源码确认 |
@@ -219,6 +253,9 @@ type CompactionResult = {
   hookResults: HookResultMessage[]
 }
 ```
+
+> State 是长期持有的会话状态；
+> ContextBundle 是某一轮从 State 里抽取、加载、组装出来的上下文包。
 
 最小运行流程：
 
@@ -289,18 +326,18 @@ REPL onSubmit
 
 这一阶段完成的是“turn 装配”，不是模型调用。
 
-| 机制 | 是否在 pre-agent loop | 源码依据 | 作用 |
-|---|---:|---|---|
-| 用户输入排队、并发保护 | 是 | `src/utils/handlePromptSubmit.ts` | 保证同一会话不会并发进入多个 turn。 |
-| 文本、图片粘贴、slash、bash、skill 分流 | 是 | `src/utils/processUserInput/processUserInput.ts` | 决定输入是否应该请求模型。 |
-| 用户显式附件收集 | 是 | `src/utils/processUserInput/processUserInput.ts` 调 `getAttachmentMessages()` | 处理 at-mention 文件、MCP resource、IDE selection、skill listing 等首轮上下文。 |
-| at-mention 文件预读 | 是 | `src/utils/attachments.ts:processAtMentionedFiles()` | 把用户显式引用文件转成 attachment/meta context。 |
-| slash/skill command 的 allowed tools / model / effort override | 是 | `src/utils/processUserInput/processSlashCommand.tsx`、`src/screens/REPL.tsx` | 为本 turn 收敛工具权限和运行参数。 |
-| fresh `ToolUseContext` 构建 | 是 | `src/screens/REPL.tsx:onQueryImpl` | 把工具、MCP、permission、app state、abort controller 等运行时上下文传入 `query()`。 |
-| 默认 system prompt 获取 | 是 | `src/screens/REPL.tsx:onQueryImpl` 调 `getSystemPrompt()` | 得到产品/工具/模式级基础系统提示。 |
-| `buildEffectiveSystemPrompt()` | 是 | `src/utils/systemPrompt.ts` | 合并默认 system prompt、自定义 system prompt、append prompt、agent definition 等。 |
-| `getUserContext()` | 是，读取发生在此阶段 | `src/screens/REPL.tsx:onQueryImpl`、`src/context.ts` | 读取 CLAUDE.md/date，作为 `QueryParams.userContext` 传入 loop。 |
-| `getSystemContext()` | 是，读取发生在此阶段 | `src/screens/REPL.tsx:onQueryImpl`、`src/context.ts` | 读取 git status/cache breaker，作为 `QueryParams.systemContext` 传入 loop。 |
+| 机制                                                            | 是否在 pre-agent loop | 源码依据                                                                         | 作用                                                                     |
+| ------------------------------------------------------------- | -----------------: | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| 用户输入排队、并发保护                                                   |                  是 | `src/utils/handlePromptSubmit.ts`                                            | 保证同一会话不会并发进入多个 turn。                                                   |
+| 文本、图片粘贴、slash、bash、skill 分流                                   |                  是 | `src/utils/processUserInput/processUserInput.ts`                             | 决定输入是否应该请求模型。                                                          |
+| 用户显式附件收集                                                      |                  是 | `src/utils/processUserInput/processUserInput.ts` 调 `getAttachmentMessages()` | 处理 at-mention 文件、MCP resource、IDE selection、skill listing 等首轮上下文。      |
+| at-mention 文件预读                                               |                  是 | `src/utils/attachments.ts:processAtMentionedFiles()`                         | 把用户显式引用文件转成 attachment/meta context。                                   |
+| slash/skill command 的 allowed tools / model / effort override |                  是 | `src/utils/processUserInput/processSlashCommand.tsx`、`src/screens/REPL.tsx`  | 为本 turn 收敛工具权限和运行参数。                                                   |
+| fresh `ToolUseContext` 构建                                     |                  是 | `src/screens/REPL.tsx:onQueryImpl`                                           | 把工具、MCP、permission、app state、abort controller 等运行时上下文传入 `query()`。     |
+| 默认 system prompt 获取                                           |                  是 | `src/screens/REPL.tsx:onQueryImpl` 调 `getSystemPrompt()`                     | 得到产品/工具/模式级基础系统提示。                                                     |
+| `buildEffectiveSystemPrompt()`                                |                  是 | `src/utils/systemPrompt.ts`                                                  | 合并默认 system prompt、自定义 system prompt、append prompt、agent definition 等。 |
+| `getUserContext()`                                            |         是，读取发生在此阶段 | `src/screens/REPL.tsx:onQueryImpl`、`src/context.ts`                          | 读取 CLAUDE.md/date，作为 `QueryParams.userContext` 传入 loop。                |
+| `getSystemContext()`                                          |         是，读取发生在此阶段 | `src/screens/REPL.tsx:onQueryImpl`、`src/context.ts`                          | 读取 git status/cache breaker，作为 `QueryParams.systemContext` 传入 loop。    |
 
 这里要特别区分“读取”和“注入”：
 
@@ -314,14 +351,40 @@ REPL onSubmit
 
 源码确认来自 `src/query.ts`：
 
-| 机制 | 阶段 | 作用 |
-|---|---|---|
-| 解构 immutable params | `queryLoop()` 开始 | 固定 `systemPrompt`、`userContext`、`systemContext`、`canUseTool`、`querySource` 等本次 query 不变量。 |
-| 注入 production deps | `queryLoop()` 开始 | 把 `callModel`、`microcompact`、`autocompact`、`uuid` 绑定到生产实现。 |
-| 初始化 `State` | `while(true)` 前 | 保存 `messages`、`toolUseContext`、autocompact tracking、max output recovery、turn count。 |
-| 初始化 token budget tracker | `while(true)` 前 | 支持 `+500k` 这类 turn token budget 自动续跑。 |
-| 计算 `QueryConfig` | `while(true)` 前 | 快照 feature/config/session 值，避免每轮重复读取部分环境。 |
-| 启动 relevant memory prefetch | `while(true)` 前 | 用 `startRelevantMemoryPrefetch()` 预取相关记忆，稍后在 loop 内消费。 |
+| 机制                          | 阶段               | 作用                                                                                        |
+| --------------------------- | ---------------- | ----------------------------------------------------------------------------------------- |
+| 解构 immutable params         | `queryLoop()` 开始 | 固定 `systemPrompt`、`userContext`、`systemContext`、`canUseTool`、`querySource` 等本次 query 不变量。 |
+| 注入 production deps          | `queryLoop()` 开始 | 把 `callModel`、`microcompact`、`autocompact`、`uuid` 绑定到生产实现。                                |
+| 初始化 `State`                 | `while(true)` 前  | 保存 `messages`、`toolUseContext`、autocompact tracking、max output recovery、turn count。       |
+| 初始化 token budget tracker    | `while(true)` 前  | 支持 `+500k` 这类 turn token budget 自动续跑。                                                     |
+| 计算 `QueryConfig`            | `while(true)` 前  | 快照 feature/config/session 值，避免每轮重复读取部分环境。                                                 |
+| 启动 relevant memory prefetch | `while(true)` 前  | 用 `startRelevantMemoryPrefetch()` 预取相关记忆，稍后在 loop 内消费。                                    |
+> token budget tracker 用来追踪本轮已经输出了多少 token、续跑了几次、最近续跑是否还有产出；如果没达到用户指定的 token 目标，就自动注入提醒让 agent 继续。
+> 它的工作方式是：
+> 1. 用户输入里解析出预算，比如 +500k -> 500000。见 src/utils/tokenBudget.ts (line 21)。
+> 2. REPL 在 turn 开始时记录当前输出 token 起点和本轮目标预算。见 src/screens/REPL.tsx (line 2893)。
+> 3. queryLoop() 初始化 budgetTracker。见 src/query.ts (line 280)。
+> 4. 每次模型没有继续调用工具、准备结束时，checkTokenBudget() 检查本轮输出 token 是否达到目标。
+> 5. 如果还没到 90%，它会注入一条 meta user message，让模型继续工作。
+> 
+> 它还会防止无意义续跑：如果已经续跑 3 次以上，而且最近两次新增输出都少于 500 tokens，就认为收益递减，停止。
+> 自动续“期”，自动续token，面试可聊
+
+> relevant memory prefetch就是长期记忆召回：根据当前用户问题，从 memory directory 里挑出可能相关的记忆文件，并异步注入给模型。
+> `startRelevantMemoryPrefetch()`是 **异步预取 + 延迟注入** 
+> startRelevantMemoryPrefetch() 在进入 while(true) 前就启动了，但它不等结果，后面每一轮 agent loop 到某个检查点时，会看这个预取任务有没有完成：
+> ``` text
+> 	  如果 memory 预取已经完成：
+> 		  把找到的 memory 文件渲染成 attachment message
+> 		  注入到当前上下文里
+> 		  后续模型就能看到这些记忆
+>  
+> 	  如果 memory 预取还没完成：
+> 		  不等待
+> 		  本轮继续走
+> 		  下一次 loop 迭代再检查一次
+> ```
+> 异步任务，面试可聊
 
 这部分不是 host pre-agent loop，但也还没有进入“模型请求前上下文投影”。它的角色是建立整个 `query()` 调用期间共享的 loop state。
 
@@ -331,28 +394,44 @@ REPL onSubmit
 
 **模型调用前：**
 
-| 顺序 | 机制 | 源码依据 | 作用 |
-|---:|---|---|---|
-| 1 | `getMessagesAfterCompactBoundary()` | `src/query.ts` | 丢弃 compact boundary 前的旧原文，只保留 post-compact view。 |
-| 2 | `applyToolResultBudget()` | `src/query.ts`、`src/utils/toolResultStorage.ts` | 对大工具结果做稳定预览替换和 transcript record。 |
-| 3 | `snipCompactIfNeeded()` | `src/query.ts` feature-gated 引用 | 在 microcompact 前尝试 history snip；当前源码镜像缺具体实现。 |
-| 4 | `deps.microcompact()` | `src/query.ts`、`src/services/compact/microCompact.ts` | 清理旧工具结果或生成 cache edits。 |
-| 5 | `contextCollapse.applyCollapsesIfNeeded()` | `src/query.ts` feature-gated 引用 | 在 autocompact 前投影 collapsed view；当前源码镜像缺具体实现。 |
-| 6 | `deps.autocompact()` | `src/query.ts`、`src/services/compact/autoCompact.ts` | 超阈值时生成 compact summary 和恢复附件。 |
-| 7 | `appendSystemContext()` | `src/query.ts`、`src/utils/api.ts` | 把 pre-agent loop 读到的 `systemContext` 追加到 system prompt。 |
-| 8 | `prependUserContext()` | `src/query.ts`、`src/utils/api.ts` | 把 pre-agent loop 读到的 `userContext` 注入为 meta user reminder。 |
-| 9 | `deps.callModel()` | `src/query.ts`、`src/services/api/claude.ts` | 发送 provider request。 |
+|  顺序 | 机制                                         | 源码依据                                                  | 作用                                                                            |
+| --: | ------------------------------------------ | ----------------------------------------------------- | ----------------------------------------------------------------------------- |
+|   1 | `getMessagesAfterCompactBoundary()`        | `src/query.ts`                                        | 丢弃 compact boundary 前的旧原文，只保留 post-compact view。                              |
+|   2 | `applyToolResultBudget()`                  | `src/query.ts`、`src/utils/toolResultStorage.ts`       | 对大工具结果做稳定预览替换和 transcript record。                                             |
+|   3 | `snipCompactIfNeeded()`                    | `src/query.ts` feature-gated 引用                       | 在 microcompact 前尝试历史裁剪：移除部分模型可见历史并记录边界，减少后续上下文压力；当前源码镜像缺具体算法。                 |
+|   4 | `deps.microcompact()`                      | `src/query.ts`、`src/services/compact/microCompact.ts` | 清理旧工具结果或生成 cache edits。                                                       |
+|   5 | `contextCollapse.applyCollapsesIfNeeded()` | `src/query.ts` feature-gated 引用                       | 在 autocompact 前把历史投影为折叠视图：部分历史区间以摘要占位替代，若已足够降上下文，就避免触发完整 compact；当前源码镜像缺具体算法。 |
+|   6 | `deps.autocompact()`                       | `src/query.ts`、`src/services/compact/autoCompact.ts`  | 超阈值时生成 compact summary 和恢复附件。                                                 |
+|   7 | `appendSystemContext()`                    | `src/query.ts`、`src/utils/api.ts`                     | 把 pre-agent loop 读到的 `systemContext` 追加到 system prompt。                       |
+|   8 | `prependUserContext()`                     | `src/query.ts`、`src/utils/api.ts`                     | 把 pre-agent loop 读到的 `userContext` 注入为 meta user reminder。                    |
+|   9 | `deps.callModel()`                         | `src/query.ts`、`src/services/api/claude.ts`           | 发送 provider request。                                                          |
+> applyToolResultBudget()就是之前说的“过大结果写入磁盘，模型只看预览和路径；预算按聚合后的消息计算，替换决策首次确定后保持不变。”
+> 注意这个机制发现的时机。
+> applyToolResultBudget() 这个过程是在 **每次 loop 迭代较前的位置、模型调用前** 完成的，不是在工具刚输出结果的那一刻立刻做“聚合预算判断”。
+> ``` text
+> 	第 N 轮模型调用
+> 	  -> assistant 发出 tool_use
+> 	  -> 执行工具，产生 tool_result
+> 	  -> tool_result 被加入后续上下文
+> 	  -> continue 到下一次 while 迭代\
+> 	第 N+1 轮 loop 开头
+> 	  -> getMessagesAfterCompactBoundary(messages)
+> 	  -> applyToolResultBudget(messagesForQuery)
+> 	  -> microcompact / autocompact / provider normalize
+> 	  -> 发给模型
+> ```
+> 不过有一点值得注意：如果**单个工具结果过大**：工具执行生成结果时，processToolResultBlock() / maybePersistLargeToolResult() 就可能直接把它写盘并替换成预览。
 
 **模型返回和工具执行后：**
 
-| 机制 | 是否在 agent loop 内 | 源码依据 | 作用 |
-|---|---:|---|---|
-| assistant stream 收集 | 是 | `src/query.ts` | 收集 text/thinking/tool_use blocks。 |
-| streaming tool execution / `runTools()` | 是 | `src/query.ts`、`src/services/tools/*` | 执行工具并生成 user-side tool_result。 |
-| tool result 回填 | 是 | `src/query.ts` | 把工具结果作为下一轮模型调用的事实输入。 |
-| post-tool `getAttachmentMessages()` | 是 | `src/query.ts` | 在工具结果后注入 queued command、memory、skill discovery、task 状态等 follow-up context。 |
-| tools refresh | 是 | `src/query.ts` | 工具执行后可能刷新工具列表，供下一轮使用。 |
-| `state.messages` 更新 | 是 | `src/query.ts` | 用 `messagesForQuery + assistantMessages + toolResults` 推进下一轮。 |
+| 机制                                      | 是否在 agent loop 内 | 源码依据                                  | 作用                                                                         |
+| --------------------------------------- | ---------------: | ------------------------------------- | -------------------------------------------------------------------------- |
+| assistant stream 收集                     |                是 | `src/query.ts`                        | 收集 text/thinking/tool_use blocks。                                          |
+| streaming tool execution / `runTools()` |                是 | `src/query.ts`、`src/services/tools/*` | 执行工具并生成 user-side tool_result。                                             |
+| tool result 回填                          |                是 | `src/query.ts`                        | 把工具结果作为下一轮模型调用的事实输入。                                                       |
+| post-tool `getAttachmentMessages()`     |                是 | `src/query.ts`                        | 在工具结果后注入 queued command、memory、skill discovery、task 状态等 follow-up context。 |
+| tools refresh                           |                是 | `src/query.ts`                        | 工具执行后可能刷新工具列表，供下一轮使用。                                                      |
+| `state.messages` 更新                     |                是 | `src/query.ts`                        | 用 `messagesForQuery + assistantMessages + toolResults` 推进下一轮。              |
 
 因此，动态附件有两类时机：
 
@@ -369,13 +448,16 @@ agent-loop follow-up attachments:
 
 还有一些机制发生在 loop 之外，但会改变下一次进入 loop 时的上下文：
 
-| 机制 | 阶段 | 影响 |
-|---|---|---|
-| manual `/compact` | pre-agent loop 的 slash/local command 路径 | 直接生成 compact result，替换/裁剪会话历史，下一次 query 从新 boundary 后开始。 |
-| `runPostCompactCleanup()` | compact 成功后 | 清理 microcompact state、memory caches、system prompt sections、classifier approvals 等。 |
-| session restore | 新会话/恢复前 | 重建 transcript、content replacement state、collapsed view 所需状态。 |
-| `/clear`、rewind、resume | host/session 层 | 改变 transcript 或缓存，间接改变下一次 `messagesForQuery`。 |
-| `InstructionsLoaded` hooks | memory reload 时 | 作为上下文加载事件，而不是一次普通模型消息。 |
+| 机制                         | 阶段                                      | 影响                                                                                 |
+| -------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------- |
+| manual `/compact`          | pre-agent loop 的 slash/local command 路径 | 直接生成 compact result，替换/裁剪会话历史，下一次 query 从新 boundary 后开始。                           |
+| `runPostCompactCleanup()`  | compact 成功后                             | 清理 microcompact state、memory caches、system prompt sections、classifier approvals 等。 |
+| session restore            | 新会话/恢复前                                 | 重建 transcript、content replacement state、collapsed view 所需状态。                       |
+| `/clear`、rewind、resume     | host/session 层                          | 改变 transcript 或缓存，间接改变下一次 `messagesForQuery`。                                      |
+| `InstructionsLoaded` hooks | memory reload 时                         | 作为上下文加载事件，而不是一次普通模型消息。                                                             |
+> 这里有笔误：
+> `runPostCompactCleanup()`是在compact 成功后，在 **auto-compact 和 manual /compact** 后都调用。
+> 所以严格来说不算**发生在 loop 之外**。接在**auto-compact**后的就在loop内，接在**manual /compact**后的就在loop外。 
 
 这就是 Claude Code 上下文工程和 agent loop 的真实关系：
 
@@ -417,12 +499,12 @@ compact/restore 决定“长会话历史如何变成可继续的短窗口”。
 
 这四层解决的是不同问题：
 
-| 层级 | 主要用途 | 关键处理 |
-|---|---|---|
-| durable transcript messages | 保留完整工作事实、UI 回放、恢复、审计。 | 写入 assistant/tool result/attachment/boundary；不等于每轮发送内容。 |
-| `messagesForQuery` | 本轮模型调用前的内部上下文窗口。 | compact boundary、tool result budget、microcompact、autocompact。 |
-| request messages before normalization | 把本轮投影和 user context 合并。 | `prependUserContext(messagesForQuery, userContext)`。 |
-| provider messages | 满足 provider 协议、真正计入模型上下文。 | attachment 渲染、连续 user 合并、assistant sibling 合并、tool pairing 修复、媒体/unsupported block 过滤。 |
+| 层级                                    | 主要用途                      | 关键处理                                                                                   |
+| ------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------- |
+| durable transcript messages           | 保留完整工作事实、UI 回放、恢复、审计。     | 写入 assistant/tool result/attachment/boundary；不等于每轮发送内容。                                |
+| `messagesForQuery`                    | 本轮模型调用前的内部上下文窗口。          | compact boundary、tool result budget、microcompact、autocompact。                          |
+| request messages before normalization | 把本轮投影和 user context 合并。   | `prependUserContext(messagesForQuery, userContext)`。                                   |
+| provider messages                     | 满足 provider 协议、真正计入模型上下文。 | attachment 渲染、连续 user 合并、assistant sibling 合并、tool pairing 修复、媒体/unsupported block 过滤。 |
 
 因此，“历史消息成为上下文”不是一个静态包含关系，而是一个读时转换关系：
 
@@ -445,16 +527,31 @@ compact/restore 决定“长会话历史如何变成可继续的短窗口”。
 
 ### 3.1 模块职责表
 
-| 模块 | 负责 | 不负责 |
-|---|---|---|
-| `ContextLoader` | 收集 system/user context，读取 memory 文件，生成当前日期和 git 快照。 | 不执行工具，不改写 transcript。 |
-| `AttachmentBuilder` | 把本轮服务端上下文渲染成 `AttachmentMessage`。 | 不把附件伪造成真实工具结果。 |
-| `MessageProjector` | 把 transcript 投影成本轮 provider 可见窗口。 | 不删除 UI 历史，除非 compact 结果被上层接受。 |
-| `ToolResultBudgeter` | 对大工具结果做磁盘持久化和稳定替换。 | 不处理 `Read` 这类自带 maxTokens 的工具全文。 |
-| `MicrocompactService` | 清理旧的可压缩工具结果或通过 cache editing 删除服务端缓存内容。 | 不生成对话 summary。 |
-| `CompactionService` | 生成 compact summary、boundary、恢复附件。 | 不把所有旧消息原样保留。 |
-| `ContextVisualizer` | 按 API 视图估算上下文占用。 | 不改变上下文。 |
-| `ProviderRequestBuilder` | 组装 system prompt、messages、tools、cache 参数。 | 不决定业务上下文是否应该存在。 |
+| 模块                       | 负责                                                  | 不负责                              |
+| ------------------------ | --------------------------------------------------- | -------------------------------- |
+| `ContextLoader`          | 收集 system/user context，读取 memory 文件，生成当前日期和 git 快照。 | 不执行工具，不改写 transcript。            |
+| `AttachmentBuilder`      | 把本轮服务端上下文渲染成 `AttachmentMessage`。                   | 不把附件伪造成真实工具结果。                   |
+| `MessageProjector`       | 把 transcript 投影成本轮 provider 可见窗口。                   | 不删除 UI 历史，除非 compact 结果被上层接受。    |
+| `ToolResultBudgeter`     | 对大工具结果做磁盘持久化和稳定替换。                                  | 不处理 `Read` 这类自带 maxTokens 的工具全文。 |
+| `MicrocompactService`    | 清理旧的可压缩工具结果或通过 cache editing 删除服务端缓存内容。             | 不生成对话 summary。                   |
+| `CompactionService`      | 生成 compact summary、boundary、恢复附件。                   | 不把所有旧消息原样保留。                     |
+| `ContextVisualizer`      | 按 API 视图估算上下文占用。                                    | 不改变上下文。                          |
+| `ProviderRequestBuilder` | 组装 system prompt、messages、tools、cache 参数。           | 不决定业务上下文是否应该存在。                  |
+
+> 注意区分 memory 。
+> 这里的`ContextLoader`负责读取 memory 文件，其中的memory，指的是：
+> CLAUDE.md / instruction memory 。这是 getUserContext() 读取的东西，类型包括 Managed、User、Project、Local、AutoMem、TeamMem。
+> 
+> 而上文startRelevantMemoryPrefetch()读取长期记忆的memory，指的是长期记忆：
+> auto-memory / relevant memories 。这是自动记忆目录里的文件，默认路径类似
+> ``` text
+> <Claude config>/projects/<project>/memory/
+> ```
+> 入口是 MEMORY.md。startRelevantMemoryPrefetch() 处理的是这类：根据当前用户输入，从记忆目录中挑选相关文件，再读取内容作为 relevant_memories attachment。
+> 
+> 后面还会有一种记忆：
+> session memory compact
+> 这个指的是：这是压缩机制里的“会话记忆”，用于替代或辅助 compact summary，不等同于 CLAUDE.md，也不等同于 relevant memory prefetch。其实就是之前compact过，保存的上一次compact的summary。
 
 ### 3.2 Claude Code 的关键入口
 
@@ -475,7 +572,7 @@ compact/restore 决定“长会话历史如何变成可继续的短窗口”。
 
 - `src/context.ts` 中 `getSystemContext()` 是 memoized async 函数。
 - 它会按条件调用 `getGitStatus()`，收集当前分支、默认分支、git user、`git status --short`、最近 5 个 commit。
-- git status 最多保留 2000 字符，超过后追加截断提示。
+- git status 最多保留 2000 字符，超过后追加==截断==提示。
 - 在 `BREAK_CACHE_COMMAND` feature 下可加入 `cacheBreaker`。
 - remote 模式或禁用 git instructions 时跳过 git status。
 
@@ -487,6 +584,23 @@ systemContext 是运行环境快照，不是持续同步状态。
 
 `getGitStatus()` 生成的文本明确说明这是“conversation start”的快照，不会在会话中自动更新。外部系统应把这类上下文看作启动时环境，不应让模型误以为它是最新 git 状态。
 
+>  memoized async 函数:
+>  返回Promise的异步函数，同时这个Promise会被缓存。
+>  ``` ts
+> 	const load = memoize(async () => {
+> 		return await readFile(...)
+> 	})
+>  ```
+
+> BREAK_CACHE_COMMAND 是一个内部/实验功能开关。
+> 它开启后，Claude Code 支持把某个临时 cache breaker 字符串塞进 system prompt，
+> 从而故意打破 prompt cache。
+> 但当前源码镜像没有显示一个公开用户命令来设置这个值。
+> 这个点不关键
+
+> remote 模式是指：
+> 如果当前 Claude Code 是跑在远程会话/远程容器环境里，getSystemContext() 就不执行 getGitStatus()。
+> 这个点不关键
 ### 4.2 `getUserContext()` 做什么
 
 源码确认：
@@ -496,6 +610,18 @@ systemContext 是运行环境快照，不是持续同步状态。
 - bare mode 会跳过自动发现，但如果有显式 add-dir 仍可读取对应目录。
 - 读取结果会通过 `setCachedClaudeMdContent()` 缓存给 auto-mode classifier 使用，避免 import cycle。
 - 返回形状是 `{ claudeMd?, currentDate }`。
+
+> bare mode:
+> ``` text
+> 	--bare 默认不做当前目录到上级目录的 CLAUDE.md 自动发现；
+> 	但如果用户显式传了 --add-dir，并且 add-dir 的 CLAUDE.md 加载开关开启，
+> 	Claude Code 仍会尊重这个显式目录，把该目录下的 CLAUDE.md / .claude rules 加入 user context。
+> ```
+> 源码注释:
+> ``` text
+> 	--bare means "skip what I didn't ask for", not "ignore what I asked for".
+> 	--bare 跳过“自动找来的上下文”，但不忽略用户明确指定的上下文。
+> ```
 
 设计结论：
 
@@ -533,6 +659,30 @@ IMPORTANT: this context may or may not be relevant...
 - HTML block comment 会被剥离，但 code / codespan 内的内容保留。
 - `MAX_MEMORY_CHARACTER_COUNT = 40000` 用于识别大 memory 文件。
 
+> 这里的memory指的是**Claude Code 自动加载进 userContext 的 Markdown 指令文件**，不是聊天历史，也不是 LLM 内部记忆。
+> 
+> Managed memory：企业/机器级托管指令，典型位置：macOS: /Library/Application Support/ClaudeCode/CLAUDE.md；Windows: C:\Program Files\ClaudeCode\CLAUDE.md；Linux: /etc/claude-code/CLAUDE.md，管理员/组织策略。
+> 
+> User memory：用户全局私人指令，典型位置：~/.claude/CLAUDE.md，以及 ~/.claude/rules/\*.md，当前用户所有项目。
+> 
+> Project memory：项目内共享指令，通常可提交进仓库，典型位置：每一级目录下的 CLAUDE.md、.claude/CLAUDE.md、.claude/rules/\*.md，项目团队。
+> 
+> Local memory：项目内私人本地指令，通常不提交，典型位置：每一级目录下的 CLAUDE.local.md，当前用户当前机器。
+
+> 从当前目录向上遍历。指的就是在当前目录找查找 `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md`，找不到再去`../`去查找 `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md`，逐渐向上遍历，但实际处理时会 reverse()，所以加载顺序是从更上层到更具体目录。
+
+> @include 的机制可以理解成：在 memory 文件（这里指的就是CLAUDE.md）正文里写一个 @路径，Claude Code 会把那个文件也读进来。例如：
+> ``` markdown
+> 	请遵守项目规范。
+> 	
+> 	@./docs/coding-style.md
+> 	@~/common/agent-rules.md
+> 	@/absolute/path/shared.md
+> ```
+> 
+> “leaf text nodes” 的意思是：
+> Claude Code 会用 Markdown lexer 把文件解析成 token，只在普通文本节点里找 @路径，但如果出现在代码块或行内代码里，就不会当成 include。
+
 设计结论：
 
 ```text
@@ -550,6 +700,8 @@ global managed instructions
   -> include-expanded dependencies
 ```
 
+> conditionally matched rules：条件规则匹配
+> include-expanded dependencies：因为 @include 被展开后，一起进入上下文的依赖文件。
 ### 4.4 注入格式
 
 `getClaudeMds()` 会把 memory 文件渲染为：
@@ -597,18 +749,18 @@ attachment 是服务端上下文，不是工具调用结果。
 
 ### 5.2 常见 attachment 的上下文含义
 
-| Attachment 类型 | 上下文意义 | 关键边界 |
-|---|---|---|
-| `file` / `already_read_file` | at-mention 或恢复时注入文件内容。 | 需要权限、大小、token 限制。 |
-| `compact_file_reference` | 压缩后文件太大，仅保留引用。 | 提醒模型需要时重新 Read。 |
-| `nested_memory` | 访问子目录时发现的更具体 memory 规则。 | 不等同于全局 CLAUDE.md。 |
-| `relevant_memories` | memory surfacing 找到的相关记忆。 | 有单文件和会话总 byte cap。 |
-| `skill_listing` / `skill_discovery` | 轻量暴露可用 skills 或发现候选。 | 不等同于加载完整 skill。 |
-| `invoked_skills` | compact 后保留已经调用过的 skill 内容。 | 按 agent scope 过滤，按预算截断。 |
-| `plan_mode` / `plan_file_reference` | 让模型持续知道 plan mode 或计划文件。 | 压缩后也要恢复。 |
-| `task_status` | 异步 agent / task 状态。 | 避免重复 spawn 或丢失结果。 |
-| `compaction_reminder` | 告诉模型 auto-compact 可用，不必因上下文紧张停止。 | 只在特定条件下出现。 |
-| `context_efficiency` | 提醒模型使用 snip 类上下文效率工具。 | 当前具体 snip 算法在源码镜像中待验证。 |
+| Attachment 类型                       | 上下文意义                            | 关键边界                    |
+| ----------------------------------- | -------------------------------- | ----------------------- |
+| `file` / `already_read_file`        | at-mention 或恢复时注入文件内容。           | 需要权限、大小、token 限制。       |
+| `compact_file_reference`            | 压缩后文件太大，仅保留引用。                   | 提醒模型需要时重新 Read。         |
+| `nested_memory`                     | 访问子目录时发现的更具体 memory 规则。          | 不等同于全局 CLAUDE.md。       |
+| `relevant_memories`                 | memory surfacing 找到的相关记忆。        | 有单文件和会话总 byte cap。      |
+| `skill_listing` / `skill_discovery` | 轻量暴露可用 skills 或发现候选。             | 不等同于加载完整 skill。         |
+| `invoked_skills`                    | compact 后保留已经调用过的 skill 内容。      | 按 agent scope 过滤，按预算截断。 |
+| `plan_mode` / `plan_file_reference` | 让模型持续知道 plan mode 或计划文件。         | 压缩后也要恢复。                |
+| `task_status`                       | 异步 agent / task 状态。              | 避免重复 spawn 或丢失结果。       |
+| `compaction_reminder`               | 告诉模型 auto-compact 可用，不必因上下文紧张停止。 | 只在特定条件下出现。              |
+| `context_efficiency`                | 提醒模型使用 snip 类上下文效率工具。            | 当前具体 snip 算法在源码镜像中待验证。  |
 
 ### 5.3 Relevant memories 的预算策略
 
@@ -619,13 +771,23 @@ attachment 是服务端上下文，不是工具调用结果。
 - `RELEVANT_MEMORIES_CONFIG.MAX_SESSION_BYTES = 60 * 1024` 限制会话内累计注入。
 - 注释说明 compact 会自然重置计数，因为旧 attachments 已从上下文中消失，重新 surfacing 是合理的。
 
+> 如何理解 **relevant memory surfacing**？
+> relevant = 和当前问题相关的，memory = Claude Code 自动记忆目录里的持久化记忆文件，surfacing = 把它“浮上来”，也就是注入到本轮模型上下文里。
+> 从一堆长期保存的 memory 文件里，找出和当前用户问题最相关的几条，读取一小段内容，作为 attachment 提供给主模型。
+
+> MAX_MEMORY_LINES：单文件限制，**单个被选中的 relevant memory 文件，最多读取前 200 行**。如果文件更长，就只 surfacing 前 200 行，并提示模型可用 Read 工具读取完整文件。
+> 
+> MAX_MEMORY_BYTES：单文件限制，**单个 relevant memory 文件最多注入 4096 bytes 内容**。和 200 行同时生效，哪个先到就截断。
+> 
+> RELEVANT_MEMORIES_CONFIG.MAX_SESSION_BYTES：会话累计限制，扫描历史消息中已经注入过的 relevant_memories attachments，把其中 mem.content.length 加起来；如果累计达到 60KB，就不再启动新的 relevant memory prefetch。
+
 设计结论：
 
 ```text
 动态记忆不只要相关性，还必须有 per-turn 和 per-session 预算。
 ```
 
-否则长会话中“看似小的相关记忆”会不断累积，变成上下文污染。
+==否则长会话中“看似小的相关记忆”会不断累积，变成上下文污染。==
 
 ## 6. 消息投影：从 transcript 到 `messagesForQuery`
 
@@ -716,20 +878,20 @@ messagesForAPI = stripExcessMediaItems(messagesForAPI)
 
 `normalizeMessagesForAPI()` 做的关键转换包括：
 
-| 转换 | 目的 |
-|---|---|
-| `reorderAttachmentsForAPI()` | attachment 会向前冒泡，直到遇到 tool result 或 assistant message，避免附件位置破坏工具结果批次。 |
-| 过滤 virtual messages | display-only / REPL inner tool call 不能进入 API。 |
-| 过滤 progress、普通 system、synthetic API error | 这些是 UI/内部状态，不是 provider 消息上下文。 |
-| local command system message 转 user message | 让模型能引用历史本地命令输出。 |
-| 连续 user messages 合并 | Bedrock 不支持连续 user messages；一方 API 也会合并成单个 user turn。 |
-| attachment 转 user/meta messages | typed attachment 在这里变成模型可见上下文。 |
-| unavailable tool references 过滤 | tool search 不可用或工具已不存在时，移除不合法 tool_reference。 |
-| assistant tool input normalize | 移除 ExitPlanModeV2 这类工具的注入字段，或去掉 tool-search-only 字段。 |
-| 同 `message.id` assistant 合并 | streaming 拆分的 assistant content blocks 在 API 前合并回同一 assistant message。 |
-| trailing/orphan thinking 过滤 | 避免 provider 因 thinking block 规则报错。 |
-| whitespace-only assistant 修复 | 避免 API 拒绝空 assistant content。 |
-| error tool_result media 清理 | resumed session 中错误 tool_result 里的媒体不会反复导致 400。 |
+| 转换                                          | 目的                                                                     |
+| ------------------------------------------- | ---------------------------------------------------------------------- |
+| `reorderAttachmentsForAPI()`                | attachment 会向前冒泡，直到遇到 tool result 或 assistant message，避免附件位置破坏工具结果批次。  |
+| 过滤 virtual messages                         | display-only / REPL inner tool call 不能进入 API。                          |
+| 过滤 progress、普通 system、synthetic API error   | 这些是 UI/内部状态，不是 provider 消息上下文。                                         |
+| local command system message 转 user message | 让模型能引用历史本地命令输出。                                                        |
+| 连续 user messages 合并                         | Bedrock 不支持连续 user messages；一方 API 也会合并成单个 user turn。                  |
+| attachment 转 user/meta messages             | typed attachment 在这里变成模型可见上下文。                                         |
+| unavailable tool references 过滤              | tool search 不可用或工具已不存在时，移除不合法 tool_reference。                          |
+| assistant tool input normalize              | 移除 ExitPlanModeV2 这类工具的注入字段，或去掉 tool-search-only 字段。                   |
+| 同 `message.id` assistant 合并                 | streaming 拆分的 assistant content blocks 在 API 前合并回同一 assistant message。 |
+| trailing/orphan thinking 过滤                 | 避免 provider 因 thinking block 规则报错。                                     |
+| whitespace-only assistant 修复                | 避免 API 拒绝空 assistant content。                                          |
+| error tool_result media 清理                  | resumed session 中错误 tool_result 里的媒体不会反复导致 400。                        |
 
 然后 `ensureToolResultPairing()` 在 API boundary 前修复或拒绝 tool_use/tool_result mismatch：
 
@@ -785,6 +947,7 @@ attachment 在 transcript 中保留类型，是为了恢复、UI、压缩和分�
 tool execution result
   -> ToolResultBlockParam / UserMessage
   -> maybePersistLargeToolResult()
+  --- next iteration
   -> applyToolResultBudget()
   -> microcompact / cached cache_edits
   -> normalizeMessagesForAPI()
@@ -844,13 +1007,52 @@ Preview (first 2 KB):
 - 只替换 fresh 且超预算的最大结果；已经见过但未替换的结果不再改变。
 - 新替换记录可写入 transcript，resume 时用 `reconstructContentReplacementState()` 重建。
 
+>  新替换记录，指的不是工具消息被替换了。
+>  指的是，新产生的工具result，假设结果太大：
+> ``` text
+> 	tool_use_id = toolu_123
+> 	原始结果 = 200KB 输出
+> ```
+> Claude Code 决定不把 200KB 全量发给模型，而是替换成：
+> ``` text
+> 	Output too large. Full output saved to: .../tool-results/toolu_123.txt
+> 	Preview: 前 2000 bytes...
+> ```
+> 这时它会额外写一条 transcript 元数据：
+> ``` json
+> 	{
+> 	  type: "content-replacement",
+> 	  replacements: [
+> 	    {
+> 	      kind: "tool-result",
+> 	      toolUseId: "toolu_123",
+> 	      replacement: "Output too large. Full output saved to: ..."
+> 	    }
+> 	  ]
+> 	}
+> ```
+> 这个 transcript 元数据，就是上述的新替换记录。
+> 
+> resume 就是重新打开旧会话。重新打开时，内存里的 seenIds / replacements 状态已经没了，所以要从 transcript 里恢复。
+> reconstructContentReplacementState() 会做两件事：
+> ``` text
+> 	扫描历史 messages：
+> 	  看到 toolu_123 这个工具结果存在
+> 	  -> 标记为 seen，表示它以前已经被模型见过，不能重新做不同决定
+> 
+> 	读取 content-replacement 记录：
+> 	  发现 toolu_123 当时替换成了某段 preview 文本
+> 	  -> 放回 replacements map
+> ```
+> 这样 resume 后再次投影上下文时，Claude Code 会继续把 toolu_123 替换成**同一段文本**，而不是重新生成一个可能不同的 preview。
+
 设计结论：
 
 ```text
 工具结果预算不是“每轮重新算一遍”，而是会话状态机。
 ```
 
-否则同一个旧工具结果有时全文、有时预览，会破坏 prompt cache，也会让模型对历史事实的可见性不稳定。
+否则同一个旧工具结果有时全文、有时预览，==会破坏 prompt cache==，也会让模型对历史事实的可见性不稳定。
 
 外部系统应保存：
 
@@ -886,6 +1088,23 @@ type ContentReplacementRecord = {
 
 这说明 microcompact 面向“工具结果内容”，不是任意消息。
 
+> microcompact 在每轮模型调用前都会被 queryLoop 调用一次；
+> 但它内部有两条可能生效的路径：
+> 1. time-based microcompact
+> 2. cached microcompact
+> 
+> microcompactMessages() 内部先判断：
+> ``` text
+> 1. time-based trigger 是否触发？
+> 	   是 -> 直接返回 time-based 结果，跳过 cached microcompact
+>
+> 2. 如果 time-based 没触发，再看 cached microcompact 是否可用？
+> 	   feature 开启 + 模型支持 + main thread
+> 	   是 -> 走 cached microcompact
+>
+> 3. 都不满足 -> 不做 microcompact，原样返回 messages
+> ```
+
 ### 8.2 time-based microcompact
 
 源码确认：
@@ -903,6 +1122,38 @@ type ContentReplacementRecord = {
 
 time-based microcompact 利用这个事实：既然 cache prefix 已经失效，不如在发请求前清理旧工具结果，减少重写成本。
 
+> time-based microcompact
+> 确实是按时间间隔来触发的，它判断的不是“对话该不该清理”，而是判断“服务端 prompt cache 大概率是不是已经过期了。”所以它的核心逻辑不是：我跑了多少轮，所以清理一次。而是：
+> 	距离上一次 assistant 消息已经太久，server-side prompt cache 很可能冷了；
+> 	反正下一次请求也要重新写完整 prefix，
+> 	那不如在发送前先把旧工具结果清掉，减少要重写的内容。
+> 	
+> 源码中的配置：gapThresholdMinutes: 60（分钟）
+
+> prompt prefix：本轮请求里，从开头开始那一大段稳定上下文。
+> 在 Claude Code 里，它通常包括：
+> ``` text
+> 	system prompt
+> 	system context
+> 	userContext meta reminder
+> 	历史 messages 的前半段
+> 	旧工具结果
+> ```
+> 
+> prompt cache :服务端(llm)复用前缀计算结果，不是我们所说的redis那种cache，是KV cache（底层实现可能类似或包含 KV cache，总之是命中能省token的那种cache）
+
+^e33907
+
+> 为什么 time-based microcompact 说“prompt prefix 本来就要重写，所以可以直接替换旧工具结果”？
+> 因为 prompt cache 有有效期。源码默认按 60 分钟判断：
+> 	距离上次 assistant 消息超过 60 分钟
+> 	-> 服务端 prompt cache 已经过期
+> 	-> 下一次请求即使前缀字节完全一样，也不能复用旧缓存
+> 	-> 服务端本来就要重新处理整段 prefix
+> 既然整段 prefix 都要重新处理，那保留旧的大工具结果全文就没有 cache 收益了，只会增加本次请求成本。
+
+> 源码标注：Legacy microcompact path removed
+> 也就是说，以前可能还有传统 microcompact 路径，但当前镜像里已经移除了，当前源码里的 microcompact 只有 time-based content clearing 一种触发路径。对于外部构建、非 ant 用户、不支持 cached microcompact 的模型、sub-agent 等场景，microcompact 本身不会做事；==上下文压力交给 autocompact 处理。==
 ### 8.3 cached microcompact
 
 源码确认：
@@ -919,6 +1170,12 @@ time-based microcompact 利用这个事实：既然 cache prefix 已经失效，
 
 外部系统如果没有 cache editing 能力，可以只实现 time-based content clearing 和 full compaction。
 
+> 实验/内部 机制。了解，不关键
+> cached microcompact 可以理解成一个“**不改本地历史，但让服务端缓存删除旧工具结果**”的优化。
+> 怎么做到**本地照发这么多内容，但让服务端的上下文忽视，同时又不影响KV cache命中**，源码中没有，是Claude code服务端的内部机制。
+
+
+
 ## 9. Autocompact 与 manual compact：把旧对话变成可继续的 summary
 
 ### 9.1 自动压缩阈值
@@ -932,6 +1189,34 @@ time-based microcompact 利用这个事实：既然 cache prefix 已经失效，
 - `MANUAL_COMPACT_BUFFER_TOKENS = 3_000`。
 - `getAutoCompactThreshold()` 返回 effective window 减 autocompact buffer。
 - `calculateTokenWarningState()` 同时计算 warning、error、auto compact threshold、blocking limit。
+
+> **MODEL_CONTEXT_WINDOW_DEFAULT**上下文窗口默认上限
+> 是模型输入上下文窗口的默认上限。它表示模型最多能承载多少上下文 token，后续所有阈值都从这个上限派生。
+> 
+> **effective context window**有效上下文窗口大小
+> 先拿模型真实窗口，再减掉压缩摘要可能需要的输出空间：
+> 	effectiveWindow = modelContextWindow - min(modelMaxOutputTokens, 20_000)
+> 	
+>  **auto compact threshold** 触发auto compact阈值
+> 	 autoCompactThreshold = effectiveWindow - 13_000
+> 	 
+> **warning / error threshold**告警阈值
+> 	auto compact 开启: threshold = autoCompactThreshold
+> 	auto compact 关闭: threshold = effectiveWindow
+> 	warningThreshold or errorThreshold = threshold - 20_000
+> 	
+> **manual compact / blocking buffer**
+> 这是更靠后的硬保护线。主查询循环里如果没有自动压缩、reactive compact、context collapse 等恢复路径接管，达到这个线会提前返回 prompt-too-long，而不是继续把请求发给 API。
+> 	blockingLimit = effectiveWindow - 3_000
+> 它保留最后 3k 余量，避免上下文完全顶满后连错误处理、手动 /compact、恢复逻辑或下一次请求都没有操作空间。
+> 
+> claude code的默认配置：
+	147k   warning/error: 开始提醒用户上下文紧张
+	167k   auto compact: 自动压缩触发
+	177k   blocking limit: 没有恢复路径时直接阻止继续请求
+	--- 阻止请求
+	180k   effective window: 已扣除 summary 输出预留后的可用输入边界
+	200k   raw model window: 模型原始上下文窗口
 
 设计结论：
 
@@ -956,6 +1241,42 @@ time-based microcompact 利用这个事实：既然 cache prefix 已经失效，
 ```text
 自动压缩不是全局无脑触发，它必须知道自己是否处在压缩子流程、reactive fallback 或其他上下文管理系统中。
 ```
+
+> querySource 可以理解为：每次进入 query() 主模型循环时传入的“本次调用来源标签”。它告诉 query loop：这次模型调用是主 REPL、SDK、子 agent、压缩 agent、session memory agent，还是其他后台任务。
+> 
+> 'session_memory'和'compact'是不一样的两种标签，但它们都属于 **forked agent / side query** 这一类“后台子查询”。
+> session_memory按当前 session 生成的单个 session 范围内的结构化工作记忆。
+	- 它会维护一个 markdown 形式的 session memory 文件。
+	- 后台在主对话结束后通过 post-sampling hook 触发。
+	- 它只在 querySource === 'repl_main_thread' 的主线程上启动。
+	- 启动后用 runForkedAgent() 开一个隔离子 agent，querySource 标记为 'session_memory'。
+	- 这个子 agent 的任务不是回答用户，而是读取当前会话，更新 session memory 文件。
+>
+> 但它们有一个交集：**session memory 可以被拿来做 compaction**。
+> 
+> 为什么**session memory 可以被拿来做 compaction**？
+> 因为 session_memory 和 compact 产物在语义上有重叠：它们都试图回答同一个问题：
+> 	如果旧对话不能完整放进上下文，后续模型最少需要知道什么，才能继续工作？
+> 传统 compact 是在压缩触发时临时跑一个 compact agent，总结旧 transcript。session_memory 是平时后台持续维护一份结构化工作笔记。
+> 所以当自动压缩发生时，如果 session memory 已经存在且不是空模板，Claude Code 可以直接把它当作“已提前维护好的摘要材料”。
+> 源码里的做法不是简单塞原文件，而是包装成 compact summary：
+	1. 读取当前 session memory 内容。
+	2. 如果内容为空模板，就放弃，回退到传统 compact。
+	3. 根据 lastSummarizedMessageId 找到 memory 已覆盖到哪条消息。
+	4. 保留这之后的最近消息，避免丢掉 memory 尚未覆盖的新上下文。
+	5. 把 session memory 内容通过 getCompactUserSummaryMessage(...) 包成 compact summary message。
+	6. 构造并返回 CompactionResult，让主 query loop 像处理普通 compact 一样替换上下文。
+>
+> 所以它是 **auto-compact 路径里的优先优化分支**。
+	query() 主循环
+	  -> deps.autocompact(...)
+	  -> autoCompactIfNeeded(...)
+	  -> trySessionMemoryCompaction(...)
+	  -> 如果成功，直接返回 CompactionResult
+	  -> 如果失败/不可用，再走 compactConversation(...)
+>
+> 总结：当上下文接近 auto compact 阈值时，先看已有 session_memory/summary.md 是否足够可用。如果可用，就用它快速构造 compact summary，避免再启动传统 compact agent 重新总结整段历史。
+
 
 ### 9.3 连续失败熔断
 
@@ -989,6 +1310,11 @@ time-based microcompact 利用这个事实：既然 cache prefix 已经失效，
 
 外部系统应避免把 `/compact` 写成“调用 summarizer 并替换历史”的独立逻辑，而应复用 compaction service。
 
+> 正常的autocompact是proactive autocompact = **预防式自动压缩**，系统根据 token 估算发现“快到阈值了”，就提前压缩。
+> reactive compact = **出错后的反应式压缩**。它不是提前压缩，而是先让请求真的发给模型。如果 provider 返回 prompt too long，说明上下文确实太长了，Claude Code 再捕获这个错误，执行 compact，然后重试。
+> reactive-only mode 下走 reactive compact。
+> 意思是：禁用 proactive autocompact，不再“提前根据估算压缩”；等真实 prompt-too-long 错误发生后，再用 reactive compact 来恢复。
+
 ## 10. CompactConversation：压缩是状态转换
 
 ### 10.1 压缩流程
@@ -1008,11 +1334,33 @@ time-based microcompact 利用这个事实：既然 cache prefix 已经失效，
 9. 创建 plan attachment、invoked skill attachment、plan mode attachment 等恢复上下文。
 10. 返回 `CompactionResult`，由 `buildPostCompactMessages()` 按固定顺序组装。
 
+> custom instructions 与 hook instructions
+> 这两个都是给“压缩摘要模型”的**附加说明**，区别在来源。
+> custom instructions = **用户自定义压缩指令**。
+> 
+> 比如用户手动执行：
+> 	/compact 请重点保留我对权限系统的设计结论，丢掉中间调试日志
+> 	
+> 这里 /compact 后面的这段话，就是 custom Instructions。它会被追加到 compact prompt 的 Additional Instructions: 里，告诉 summarizer 这次压缩时要特别注意什么。
+> 
+> hook instructions = **PreCompact hook 输出的新压缩指令**。
+> 
+> 比如某个 hook 在压缩前检查项目状态，然后输出：
+> 	Preserve current git branch, failing test names, and active TODO list.
+> 	
+> 这段输出会被当成额外压缩指令，合并进 compact prompt。
+
+> cache-sharing forked agent
+> 它会 fork 一个“看到主会话当前投影上下文”的摘要子 agent，但不是上下文和状态完全一致的子 agent；它主要保持 API 请求前缀一致，以便命中主会话已经建立的 prompt cache，降低压缩摘要请求的成本和延迟。
+
+> truncateHeadForPTLRetry() 可以理解成：**compact 自己也因为 prompt-too-long 失败时，砍掉最早的一部分对话，再重试生成 summary 的兜底函数。**
+> 这里 PTL = Prompt Too Long。
+
 ### 10.2 compact prompt 的内容要求
 
 源码确认来自 `src/services/compact/prompt.ts`：
 
-- compact prompt 明确要求模型不要调用任何工具，只输出文本。
+- compact prompt 明确要求模型==不要调用任何工具，只输出文本==。
 - summary 要包含用户请求、技术概念、文件和代码段、错误与修复、所有非工具用户消息、待办、当前工作、可选下一步。
 - summary 先要求 `<analysis>` 草稿，再要求 `<summary>`，`formatCompactSummary()` 会剥离 `<analysis>`。
 - `getCompactUserSummaryMessage()` 会把 summary 包装为“previous conversation ran out of context”的 continuation message。
@@ -1025,6 +1373,16 @@ time-based microcompact 利用这个事实：既然 cache prefix 已经失效，
 ```
 
 它不是普通摘要，而是 continuation contract：必须保留当前任务、用户反馈、代码状态、错误、待办和下一步。
+
+> 经典的Claude八段式摘要
+
+> “previous conversation ran out of context”的 continuation message。
+> 原文：This session is being continued from a previous conversation that ran out of context.
+> The summary below covers the earlier portion of the conversation.
+> 本会话是从一个因为上下文耗尽而中断的先前会话继续而来。下面的摘要覆盖了该会话较早部分的内容。
+
+> suppressFollowUpQuestions 可以译成：**抑制追问** / **禁止后续追问**
+> 这句话是在说：**自动压缩完成后，Claude Code 不希望模型停下来问用户“接下来要做什么”，也不希望模型复述一遍“我看到你之前在做……”；它希望模型像没中断过一样直接继续干活。**
 
 ### 10.3 post-compact message 顺序
 
@@ -1048,7 +1406,7 @@ compact 后的上下文要先声明边界，再给摘要，再给保留原文，
 
 这个顺序让模型先理解“历史已被压缩”，再读取连续工作所需状态。
 
-## 11. Session Memory Compact：用外部会话记忆替代重复总结
+## 11. Session Memory Compact：用**后台维护的**会话记忆替代重复总结
 
 ### 11.1 机制定位
 
@@ -1071,6 +1429,8 @@ session memory compact 把“已总结的长期记忆”和“最近未总结消
 
 相比每次 compact 都重新 summarize 全部上下文，它可以复用持续维护的 session memory，只保留最近增量。
 
+> 见笔记： [[#9.2 `shouldAutoCompact()` 的保护条件]]
+
 ### 11.2 保留消息的 API 不变量
 
 源码确认：
@@ -1090,6 +1450,19 @@ session memory compact 把“已总结的长期记忆”和“最近未总结消
 - tool_result 必须有对应 tool_use。
 - 同一 provider response 被拆成多个 assistant records 时，不能只保留其中一段。
 - thinking blocks 和后续 tool_use/result 轨迹要满足 provider 规则。
+
+> calculateMessagesToKeepIndex() 计算 compact 后要保留的尾部消息起点。默认起点是 lastSummarizedMessageId 的下一条消息，也就是只保留 session memory 尚未覆盖的新消息；如果这段尾部不足 minTokens 或 minTextBlockMessages，就把起点向更旧的消息移动，扩大尾部保留范围。扩展最多只能到最近 compact boundary 之后，不能跨回已经压缩过的区域。最后再用 adjustIndexToPreserveAPIInvariants() 修正起点，避免切断 tool_use/tool_result 等 provider 协议配对。
+
+> 值得注意的是，假如“向更旧的消息移动”，这会导致session memory的summary和toKeep的messages有一定程度的重合。但这不是逻辑矛盾，而是一个有意的工程取舍：**宁愿保留一点重复的近期原文，也不要压缩后只剩抽象 memory，导致模型失去最近语境。**
+> 原因如下：
+> 1. **session memory 是结构化工作记忆，不是逐字 transcript**  
+    它可能记录“当前状态、错误、下一步”，但不会完整保留最近几轮措辞、工具结果细节、模型刚刚说过的话。向左扩是为了补足这部分原文语境，并不会产生冲突。
+> 2. **minTokens 和 minTextBlockMessages 是“尾部新鲜度”要求**  
+    如果 last summarized 后只有一两条很短消息，compact 后模型看到的是：一大段结构化 memory + 很少的真实最近对话。这样继续任务容易断。向左扩就是保证有足够“最近原文尾巴”。
+> 3. **重叠比断裂更安全**  
+    少量重复通常只是浪费 token；但没有足够近期原文，模型可能误解当前状态，导致这次会话失败会浪费更多token。Claude Code 这里显然选择了 continuity 优先。
+> 4. **还要维护 provider 协议完整性**  
+    后面 adjustIndexToPreserveAPIInvariants() 还可能继续把起点往左挪，避免切断 tool_use/tool_result。这也可能扩大重叠，但能避免 API 消息序列非法。
 
 ## 12. 压缩后的上下文恢复
 
@@ -1112,6 +1485,10 @@ session memory compact 把“已总结的长期记忆”和“最近未总结消
 
 这避免压缩后模型失去关键文件，也避免无限重复同一文件内容。
 
+> **POST_COMPACT_MAX_FILES_TO_RESTORE**压缩后最多恢复几个最近读过的文件
+> **POST_COMPACT_MAX_TOKENS_PER_FILE**每个恢复文件最多给多少token
+> **POST_COMPACT_TOKEN_BUDGET**所有恢复文件 attachment 加起来最多多少token
+>  preserved tail **压缩后保留下来的尾部原始消息**，不重复读取
 ### 12.2 Skills 恢复
 
 源码确认：
@@ -1129,6 +1506,83 @@ session memory compact 把“已总结的长期记忆”和“最近未总结消
 skill listing 是发现索引；invoked skill content 是已生效指令。二者在 compact 后应区别处理。
 ```
 
+> Skills 恢复，恢复的是“已经调用并影响当前任务的 skill 内容”，不是“重新广播所有可用 skill 目录”。
+> 
+> skill_listing 是**发给模型看的 attachment**。
+> 它的内容是“当前有哪些 skills 可用”，类似一个技能目录：
+> Available skills:
+	- code-review
+	- frontend-design
+	- git-workflow
+> 模型能看到的是 skill_listing。
+> 
+> sentSkillNames 是**Claude Code 内部的去重状态**。
+> 是一个 Map\<agentId, Set\<skillName>>，用来记录“哪些 skill 名称已经给这个 agent 发过 listing 了”。模型看不到 sentSkillNames，也不能通过它调用 skill。
+> 
+> invoked_skills 和 skill_listing 是同级的 attachment 类型，但语义不同：
+> skill_listing:
+	  发现索引
+	  告诉模型有哪些 skill 可以调用
+	  通常只包含名称/描述等轻量信息
+> invoked_skills:
+	  已调用 skill 的正文内容
+	  告诉模型这些 skill 指令已经在当前任务里生效过
+	  compact 后用于恢复已生效的操作规则
+>  
+> AttachmentMessage
+	├─ skill_listing       // 可用技能目录
+	├─ skill_discovery     // 技能发现结果
+	├─ invoked_skills      // 已调用技能正文
+	├─ compact_file_reference
+	├─ plan_mode
+	└─ ...
+>
+> compact 后模型看到的是新的 post-compact messages，大致是：
+	compact boundary
+	summary
+	messagesToKeep / preserved tail
+	restored attachments:
+	  - restored files
+	  - invoked_skills
+	  - plan/task/hooks...
+>
+> 旧的 skill_listing 如果在 compact boundary 之前，就不会进入下一轮 messagesForQuery。它还在 transcript / 历史记录里，但不在模型本轮 API view 里。
+> 
+> sentSkillNames 不变，只表示 Claude Code 内部还记得：
+> 	这些 skill 名称已经给这个 agent 发过 listing 了，不要因为 compact 再重发一遍完整目录。
+> 它不是模型可见上下文。
+> 
+> LLM 还是看得到原 skill_listing？
+> 答案是：**通常看不到。**
+>  除非有这些情况：
+>  1. skill_listing 恰好在 messagesToKeep / preserved tail 里。
+>  2. compact summary 把可用 skill 名称总结进去了。
+>  3. 后续 skill 集合变化，resetSentSkillNames() 被触发，重新生成新的 skill_listing。
+>  4. resume/recovery 路径里旧 transcript 中的 listing 仍在当前可见窗口内。（本质同1）
+> 
+> 但正常 compact 后，Claude Code 的设计是：
+> 	不重发完整 skill_listing
+> 	只恢复 invoked_skills
+> 	保留 SkillTool 调用能力
+> 这意味着模型仍然**能调用 skills**，因为 SkillTool 还在工具 schema 里；但它未必还能完整看见“所有可用 skill 的目录”。它主要能继续依赖已经调用过的 skill 内容，也就是 invoked_skills。
+> 
+> 那模型要调用其他skills呢？
+> 如果 compact 后需要调用**还没调用过的其他 skills**，Claude Code 主要依赖两条路：
+> 1. **模型已经知道 skill 名称**
+> 	比如 compact summary、preserved tail、用户当前消息里提到了某个 skill 名，或者模型之前看过 skill_listing 并在上下文/summary 中保留了这个名字。这时 SkillTool 还在工具 schema 里，模型可以直接调用对应 skill。
+> 2. **后续重新触发 skill 发现 / listing 更新**
+> 	如果 skill 集合发生变化，比如插件 reload、skill 文件变化，内部会 resetSentSkillNames()，下一次就可能重新注入新的 skill_listing。如果有 skill search / discovery 机制，也可以通过发现流程找候选 skills，而不是依赖全量 listing 重注入。
+> 
+> 但如果满足下面这种情况：
+	compact 前有完整 skill_listing
+		-> compact 后 listing 被压掉
+		-> sentSkillNames 没 reset，所以不重发 listing
+		-> summary 里也没提某个未调用 skill
+		-> 用户也没提
+		-> 模型不知道那个 skill 名称
+>
+> 那模型确实不太可能主动调用那个 skill。
+> 这是 Claude Code 的取舍：**compact 后优先保持已生效 skill 的连续性，而不是反复广播完整技能目录。**
 ### 12.3 Plan mode 和计划文件恢复
 
 源码确认：
@@ -1173,6 +1627,89 @@ skill listing 是发现索引；invoked skill content 是已生效指令。二�
 system prompt 内部也要区分稳定部分和动态部分，不能整段统一缓存或统一不缓存。
 ```
 
+> system prompt 分块 指的是：Claude Code 内部的 `systemPrompt` 是 `string[]`，不是单个大字符串。
+>
+> 大致可以理解成：
+>
+> ```text
+> systemPrompt[]
+>   attribution header / CLI prefix
+>   静态产品说明
+>   静态工具使用规则
+>   tone / style / output efficiency
+>   [可选] SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+>   session guidance
+>   memory prompt
+>   env info
+>   language / output style
+>   MCP instructions
+> ```
+>
+> cache scope 指的是：某个 system prompt block 的 prompt cache 复用范围。
+>
+> 在源码里主要会出现两种缓存语义：
+>
+> ```text
+> org-level cache:
+>   普通 prompt cache，默认不跨组织 / 租户边界复用。
+>   适合当前用户、组织或会话相关的 system prompt 内容。
+>
+> global cache:
+>   更大范围的公共缓存，只适合非常稳定、非用户特定的公共前缀。
+>   例如 Claude Code 内置静态说明。
+> ```
+>
+> 为什么要分块？
+>
+> 因为 prompt cache 依赖请求前缀字节稳定。如果把 system prompt 全部拼成一个字符串，只要其中一小段变化，比如 cwd、env info、MCP instructions、language、output style 或用户/session 相关配置变化，就可能影响整段缓存复用。
+>
+> 所以 Claude Code 不是简单地“整段缓存”或“整段不缓存”，而是先把 system prompt 拆成 block，再给不同 block 决定不同的 cache scope。
+>
+> 常规 / 降级路径可以理解成：
+>
+> ```text
+> splitSysPromptPrefix()
+>   attribution header        -> cacheScope: null
+>   system prompt prefix      -> cacheScope: org
+>   rest system prompt        -> cacheScope: org
+> ```
+>
+> 也就是说，即使不走 global cache，Claude Code 仍然会做 system prompt 分块，并给可缓存部分使用普通 org-level prompt cache。
+>
+> `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` 是 global cache mode 下使用的分界 marker。
+>
+> 当 global cache mode 启用、边界存在，并且没有因为 MCP tools 等条件降级时，Claude Code 会把边界前后的内容区别处理：
+>
+> ```text
+> splitSysPromptPrefix()
+>   attribution header        -> cacheScope: null
+>   CLI system prompt prefix  -> cacheScope: null
+>   boundary 前 static blocks -> cacheScope: global
+>   boundary 后 dynamic blocks-> cacheScope: null
+> ```
+>
+> 边界前是相对稳定的 Claude Code 内置规则，例如 intro、system section、工具使用规则、tone/style 等，适合 global cache。
+>
+> 边界后是更容易随用户、session 或运行环境变化的内容，例如 session guidance、memory prompt、env info、language、output style、MCP instructions 等，不适合 global cache。
+>
+> MCP tools 存在时的“跳过”不要理解成“不做 cache”。
+>
+> 它跳过的是 global system prompt cache 策略，而不是跳过 system prompt 分块或跳过 prompt cache 本身。
+>
+> 原因是 MCP tools 是用户/会话相关的动态工具，工具 schema 区域会强烈依赖当前用户连接了哪些 MCP server。为了避免把用户特定工具上下文混进跨用户可复用的 global cache 策略里，Claude Code 会降级为 org-level cache：
+>
+> ```text
+> 有实际 MCP tools，需要跳过 global:
+>   attribution header        -> cacheScope: null
+>   system prompt prefix      -> cacheScope: org
+>   rest system prompt        -> cacheScope: org
+> ```
+>
+> 所以 13.1 的重点不是“system prompt 一定按 static/global 和 dynamic/null 拆”，而是：
+>
+> system prompt 内部要按稳定性和信任/复用范围分块；global cache 只是其中一种优化路径。默认或降级情况下仍然分块，只是使用更保守的 org-level cache。
+> 
+> 在本地 Claude Code 进程里，org-level cache 和 global cache ，除了**构造 API 请求时给 cache_control 打的标记不同**，似乎就没有区别了。区别主要在Claude code的服务端，是否会命中跨用户/跨组织的全局公共缓存。
 ### 13.2 tool schema 缓存
 
 源码确认：
@@ -1187,6 +1724,22 @@ system prompt 内部也要区分稳定部分和动态部分，不能整段统一
 工具 schema 是上下文的一部分，也会影响 prompt cache。稳定字段和 per-request 字段应分开。
 ```
 
+> 这一节讲的不是“工具执行结果缓存”，而是：**工具定义本身也是模型上下文的一部分，工具 schema 的字节变化会影响 prompt cache 命中，所以 Claude Code 要尽量让工具 schema 稳定。**
+> 源码注释：
+> Tool schemas render at server position 2 ... any byte-level change busts the entire tool block AND everything downstream.
+> 服务端 prompt cache 不是只看 messages。tools 数组也在缓存前缀里，而且位置很靠前。只要 tool schema 字节变了，后面的缓存都可能失效。
+> 
+> 所以 Claude Code 做了一个本地 session 级缓存：
+> 	const TOOL_SCHEMA_CACHE = new Map<string, CachedSchema>()
+> 
+> toolToAPISchema() 第一次渲染某个工具 schema 后，把 base schema 缓存起来。后续同一 session 里尽量复用第一次渲染结果，避免中途 GrowthBook feature flag 翻转、tool.prompt() 动态变化等导致 serialized tools array 改字节。
+> 第一点和第二点说的就是这个。
+> 
+> "per-request overlay 才加入 `defer_loading`、`cache_control` 等可变字段。"
+> per-request overlay：**每次请求临时叠加的配置层**。
+> defer_loading：**延迟加载**
+> cache_control：**缓存控制**
+> 这一句想说的是：缓存的不是最终完整对象，而是稳定的基础部分。然后每次请求再复制一份，加上本轮才决定的字段。为什么这么做？因为 defer_loading 这类字段每轮可能不同。比如 tool search 开启后，有些 MCP tools 先不完整加载，只打一个 defer_loading: true。如果把这些动态字段写进缓存 base，就会污染后续请求。所以这里的设计原则是：稳定字段缓存；每轮变化字段临时叠加。
 ### 13.3 user context 前置
 
 源码确认：
@@ -1199,6 +1752,79 @@ system prompt 内部也要区分稳定部分和动态部分，不能整段统一
 ```text
 用户/项目指令以 meta user reminder 形式前置，可以让它靠近消息开头，同时避免污染 system prompt cache 的动态部分。
 ```
+
+> user context 前置不是前置到整个 API prompt 的最最开头。Anthropic 请求里大致有几个区域：
+	tools
+	system
+	messages
+> prependUserContext() 做的是：**把 userContext 插到 messages 数组的第一条**。
+> 所以准确的说法是：前置到 conversation messages 的第一条，作为 meta user message。不是前置到 tools/system prompt 前面。
+> 
+> user context 不是用户当前输入的那条消息。基础 userContext 主要是：claudeMd: CLAUDE.md / memory files 聚合内容、currentDate: 今日日期。另外在主线程里还可能叠加一些 coordinator/scratchpad/proactive 状态。
+>
+> 关于user context和system prompt 静态段中间夹了一个动态段的疑问：user context会不会因为动态段而不命中缓存？
+> 
+> 这里容易被 `system prompt` / `user context` 这两个名字误导。它们不是按“静态 / 动态”命名的，而是按**注入通道和语义位置**命名的。
+> 
+> Claude Code 里大致有几类上下文：
+> 
+> ```text
+> tools
+> system prompt 静态段
+> system prompt 动态段
+> messages[0] userContext meta reminder
+> messages[1..] transcript
+> ```
+> 
+> `userContext` 走的是 `messages` 通道，作为第一条 meta user message 注入；`systemContext` 走的是 system prompt 通道，会追加到 system prompt 末尾。这样做的一个重要原因是保护 system prompt cache：CLAUDE.md、日期、项目上下文这类用户 / 项目相关内容如果直接塞进 system prompt，会让 system prompt 更容易变化。
+>
+> ### prefix cache 的缓存点
+>
+> `cache_control` 标记的不是“只缓存当前这一段”，而是告诉服务端：**从 prompt 开头到这个标记位置为止的前缀可以缓存**。
+>
+> 简化看，Claude Code 可能形成两个层次的缓存点：
+>
+> ```text
+> tools
+> system attribution
+> system prefix
+> system 静态规则                 <- 缓存点 A：短前缀，高稳定性
+> system 动态内容
+> messages[0] userContext
+> messages[1..n] 历史对话
+> messages[n+1] 当前用户消息       <- 缓存点 B：长前缀，高收益
+> ```
+>
+> 缓存点 A 主要服务于 Claude Code 内置静态规则的复用。它命中率最高，但仍依赖前面的 tool schema 等内容稳定。
+>
+> 缓存点 B 是 message-level cache marker，默认放在最后一条 message 上。它缓存的是从 prompt 开头到本轮最后一条 message 的整个长前缀。下一轮请求时，上一轮的 userContext、旧 transcript、上一轮用户消息等都变成可复用前缀。
+>
+> 因此，`messages` 里的旧对话不是没吃到 prefix cache；它吃的是上一轮 message-level cache marker 写下的长前缀缓存。
+>
+> ### 为什么 system 动态段不会让缓存完全失效？
+>
+> system 动态段确实会影响缓存点 B，因为缓存点 B 覆盖了 system 动态段和 messages。如果 system 动态段字节变化，长前缀缓存可能 miss。
+>
+> 但 Claude Code 有两层缓冲：
+>
+> 1. system 静态段前后的边界让缓存点 A 仍然可以命中较短但稳定的前缀。
+> 2. system 动态段虽然叫“动态”，但很多内容在会话内会被 memoize 或保持快照，例如 user/system context、tool schema、beta header、TTL eligibility 等都尽量保持稳定。
+>
+> 所以实际效果是：
+>
+> ```text
+> 缓存点 A：收益较小，但命中率最高。
+> 缓存点 B：收益最大，通常也能命中，但依赖 tools、system 动态段、userContext、旧 transcript 都稳定。
+> ```
+>
+> 最终心智模型：
+>
+> ```text
+> Claude Code 不是只缓存 system prompt，也不是只缓存 messages；
+> 它通过多个 cache_control 点，把“高稳定短前缀”和“高收益长前缀”分层缓存。
+> ```
+>
+> 这也解释了为什么它要做 tool schema cache、system prompt 分块、userContext 前置、context memoize 和 beta header latch：这些设计都在减少 API prompt 前缀的字节抖动，从而提高 prompt cache 命中率。
 
 ## 14. 上下文观测：`/context` 不是装饰功能
 
@@ -1287,17 +1913,17 @@ hooks 可以改变压缩指令和压缩后上下文，因此必须被视为上�
 
 ### 16.1 推荐模块划分
 
-| 模块 | 接口 | 核心职责 |
-|---|---|---|
-| `MemoryLoader` | `loadMemoryFiles(cwd, settings)` | 发现、include、条件规则、过滤 memory 文件。 |
-| `ContextBuilder` | `buildContextBundle(session)` | 收集 system/user context 和本轮 attachments。 |
-| `AttachmentRenderer` | `renderAttachment(attachment)` | 把 typed attachment 转为 meta user messages。 |
-| `MessageProjector` | `projectForModel(transcript, context)` | compact boundary、预算、microcompact、autocompact。 |
+| 模块                          | 接口                                               | 核心职责                                                                   |
+| --------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------- |
+| `MemoryLoader`              | `loadMemoryFiles(cwd, settings)`                 | 发现、include、条件规则、过滤 memory 文件。                                          |
+| `ContextBuilder`            | `buildContextBundle(session)`                    | 收集 system/user context 和本轮 attachments。                                |
+| `AttachmentRenderer`        | `renderAttachment(attachment)`                   | 把 typed attachment 转为 meta user messages。                              |
+| `MessageProjector`          | `projectForModel(transcript, context)`           | compact boundary、预算、microcompact、autocompact。                          |
 | `ProviderMessageNormalizer` | `normalizeForProvider(projectedMessages, tools)` | 合并、过滤、attachment 渲染、tool pairing 修复，让内部 messages 变成 provider messages。 |
-| `ToolResultStore` | `persistToolResult(block)` | 大工具结果落盘、预览、恢复决策。 |
-| `CompactionService` | `compact(messages, options)` | 生成 summary、boundary、messagesToKeep、attachments。 |
-| `ContextLedger` | `analyze(projectedRequest)` | token 分类、阈值、buffer、来源解释。 |
-| `CacheCoordinator` | `splitSystemPrompt()`, `freezeToolSchemas()` | 管理 prompt cache 稳定性。 |
+| `ToolResultStore`           | `persistToolResult(block)`                       | 大工具结果落盘、预览、恢复决策。                                                       |
+| `CompactionService`         | `compact(messages, options)`                     | 生成 summary、boundary、messagesToKeep、attachments。                        |
+| `ContextLedger`             | `analyze(projectedRequest)`                      | token 分类、阈值、buffer、来源解释。                                               |
+| `CacheCoordinator`          | `splitSystemPrompt()`, `freezeToolSchemas()`     | 管理 prompt cache 稳定性。                                                   |
 
 ### 16.2 推荐状态模型
 
@@ -2183,3 +2809,5 @@ Observability and Recovery
 - 子专题之间允许交叉引用，但不要互相替代：例如 `messagesForQuery` 可以说明 microcompact 的位置，Microcompact 专题负责解释具体实现。
 - 如果源码不可见或 feature-gated，只写已确认的调用位置、顺序和边界，把具体算法标为 `待验证`。
 - 每完成一个专题，应回到本文检查主线、覆盖矩阵和链接是否需要更新。
+
+[^1]: 
