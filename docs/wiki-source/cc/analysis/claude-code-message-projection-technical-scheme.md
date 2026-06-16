@@ -1,865 +1,1058 @@
-# Claude Code MessageProjection 技术方案：从 transcript 到 provider request 的可复现投影层
+# Claude Code MessageProjection 方法级源码分析：投影链上每个方法到底做什么
 
 ## 如何阅读本文
 
-本文分析 Claude Code 中“MessageProjection”这一机制。需要先说明：当前源码镜像中没有一个直接命名为 `MessageProjection` 的类或类型；本文使用这个名字指代 Claude Code 在每次模型调用前，把完整会话历史投影成本轮模型可见窗口的机制。源码中最接近的实体是 `messagesForQuery`、`getMessagesAfterCompactBoundary()`、`normalizeMessagesForAPI()` 以及 `query.ts` 中围绕它们串起来的投影链。
-
-推荐两条阅读路径：
-
-- **快速判断路径**：读本节、§ Learning Question、§ Scope、§ 0 设计摘要、§ 1 心智模型、§ 2 执行流。目标是在 30 分钟内理解 MessageProjection 到底解决什么问题。
-- **实现路径**：从 § 3 数据协议 顺序读到 § 10 测试计划。目标是为外部 agent 系统设计一套可落地的投影层。
-
-文档地图：
-
-| 目标 | 主要章节 |
-|---|---|
-| 快速理解 MessageProjection | § 0、§ 1、§ 2 |
-| 复现投影 pipeline | § 3、§ 4、§ 5 |
-| 理解 provider 前最后转换 | § 6 |
-| 处理 UI、SDK、resume 差异 | § 7 |
-| 做工程落地 | § 8、§ 9、§ 10、§ 11 |
-| 核验源码依据 | 附录 A、附录 B |
-
-最小闭环如下：
+这版文档只回答一个窄问题：Claude Code 在 `queryLoop()` 里把 `messages` 变成当前模型调用窗口时，下面这些方法各自到底做了什么、为什么按这个顺序执行、各自改了什么状态。
 
 ```text
--------------------+      read-time projection       +--------------------+
-| durable transcript| ------------------------------> | messagesForQuery   |
-| Message[]         |                                 | internal API view  |
-+-------------------+                                 +---------+----------+
-      ^                                                           |
-      | loop continuation / compact / tool results                |
-      |                                                           v
-+-----+-------------+      provider normalization       +----------+---------+
-| next State.messages| <------------------------------ | messagesForAPI     |
-| fact source        |                                 | provider request   |
-+-------------------+                                 +--------------------+
+getMessagesAfterCompactBoundary()
+applyToolResultBudget()
+snipCompactIfNeeded()
+microcompact()
+contextCollapse.applyCollapsesIfNeeded()
+autocompact()
+buildPostCompactMessages()
+prependUserContext()
 ```
+
+推荐阅读路径：
+
+- **只想理解机制**：读 §0、§1，然后按 §2 到 §9 顺序看八个方法。
+- **想复现实现**：读 §1 的总执行图，再重点看每个方法里的“输入输出”“内部步骤”“状态副作用”和 §11 的最小实现骨架。
+- **想核验源码**：直接看每节开头的源码入口和附录 A。
+
+这不是 context engineering 总览，也不是 agent loop 总览。相关总链路已经在其他 analysis 中分析过；本文只细究投影链上的具体方法。
 
 ## Learning Question
 
-本文回答一个可脱离 Claude Code 源码复用的工程问题：
+本文回答：
 
 ```text
-如果一个 agent 系统要同时支持长会话、工具调用、压缩、恢复、UI 回放、
-provider 协议差异和 token 预算，应该如何把完整 transcript 投影成本轮模型请求？
+Claude Code 的 MessageProjection 不是一个类，而是一组方法串起来的 read-time pipeline。
+这些方法分别如何切片、预算、裁剪、微压缩、折叠、完整压缩和注入上下文？
 ```
 
-一句话答案：
+一句话结论：
 
 ```text
-不要把 transcript 直接发给模型；每轮模型调用前都生成一个可丢弃、可审计、
-可恢复的 API view，再由 provider normalizer 转成最终 request。
+MessageProjection 不是“把历史数组传给模型”，而是每轮调用前按固定顺序构造一个临时窗口：
+先确定 active history，再按 provider 实际 wire 形态控制大工具结果，
+再让 snip/microcompact/collapse/autocompact 逐级释放上下文压力，
+最后才把 userContext 作为 meta user message 注入请求。
 ```
 
 ## Scope
 
 本文覆盖：
 
-- `query.ts` 每轮模型调用前的 `messagesForQuery` 投影顺序。
-- `messagesForQuery` 与 `messagesForAPI` 的边界。
-- compact boundary、tool result budget、snip、microcompact、context collapse、autocompact 的顺序和职责。
-- 工具执行后如何把 assistant messages、tool results、attachments 回填到下一轮 `State.messages`。
-- `/context`、UI scrollback、SDK、resume 为什么不能直接使用同一视图。
-- 面向外部系统的模块划分、数据协议、失败模式和测试计划。
+- 八个方法的调用点、输入输出、内部决策和副作用。
+- 方法之间的依赖顺序，尤其是为什么 `applyToolResultBudget()` 在 `microcompact()` 前，为什么 `contextCollapse` 在 `autocompact()` 前。
+- 可见源码中能确认的机制，以及 feature-gated 缺失源码只能确认的调用契约。
 
 本文不覆盖：
 
-- `snipCompact.ts`、`snipProjection.ts` 的具体裁剪算法。当前源码镜像只有 feature-gated 引用，没有文件实体。
-- `services/contextCollapse/*` 的具体算法。当前源码镜像只有 feature-gated 引用，没有完整实现文件。
-- provider streaming 的全部细节。本文只分析它与投影层的接口边界。
-- `mini-cc` 课程实现、lesson 注释和 build-along。
+- agent loop 的完整执行流。
+- pre-agent loop 如何收集系统上下文、用户输入和 attachment。
+- provider streaming 的完整实现。
+- `snipCompact.ts`、`snipProjection.ts`、`contextCollapse` 的具体算法。当前源码镜像中这些实现文件不可见，只能分析调用契约。
+- `mini-cc` 或 build-along。
 
-## 0. 设计摘要
+## 0. 核心结论
 
-### 0.1 核心方案
+### 0.1 八个方法的职责一览
 
-Claude Code 的 MessageProjection 可以拆成两级：
-
-```text
-Transcript Projection:
-  Message[] -> messagesForQuery
-
-Provider Projection:
-  messagesForQuery + userContext + tools -> messagesForAPI
-```
-
-第一级在 `src/query.ts` 的 `queryLoop()` 中完成，主要解决“本轮模型应该看到哪一段历史，以及哪些历史应该被替换、折叠、压缩或总结”。第二级在 `src/services/api/claude.ts` 和 `src/utils/messages.ts` 中完成，主要解决“provider API 接受什么形状的 user/assistant messages”。
-
-### 0.2 为什么必须有投影层
-
-一个朴素 agent loop 可能这样做：
-
-```ts
-await callModel({ messages: transcript })
-```
-
-Claude Code 源码说明这会失败。原因不是单纯 token 太多，而是 `transcript` 同时服务多个目标：
-
-- UI 要保留足够多历史用于 scrollback。
-- resume 要从 JSONL 恢复 parent chain。
-- compact 要保留 boundary 和 summary metadata。
-- tool result budget 要替换大输出但保持 `tool_use_id` 稳定。
-- provider 要看到合法的 `user` / `assistant` 交替和 tool result 配对。
-- `/context` 要展示模型实际看到的 API view，而不是 raw history。
-
-因此，投影层的核心职责不是“删除旧消息”，而是：
-
-```text
-在不破坏 durable transcript 的前提下，为当前模型调用构造一个临时、合法、预算内的上下文窗口。
-```
-
-### 0.3 源码确认的主链路
-
-主链路来自 `src/query.ts`：
-
-```text
-queryLoop()
-  state.messages
-    -> getMessagesAfterCompactBoundary()
-    -> applyToolResultBudget()
-    -> snipCompactIfNeeded()                  // feature-gated，当前镜像缺具体实现
-    -> microcompact()
-    -> contextCollapse.applyCollapsesIfNeeded() // feature-gated，当前镜像缺具体实现
-    -> autocompact()
-    -> buildPostCompactMessages()             // only if compacted
-    -> prependUserContext()
-    -> deps.callModel()
-       -> queryModelWithStreaming()
-          -> normalizeMessagesForAPI()
-          -> ensureToolResultPairing()
-          -> provider request
-```
-
-关键源码位置：
-
-- `src/query.ts:219` 定义 `query()`，`src/query.ts:241` 进入 `queryLoop()`。
-- `src/query.ts:365` 从 `getMessagesAfterCompactBoundary(messages)` 得到 `messagesForQuery`。
-- `src/query.ts:379` 执行 `applyToolResultBudget()`。
-- `src/query.ts:403` 调用 feature-gated `snipCompactIfNeeded()`。
-- `src/query.ts:415` 调用 `deps.microcompact()`。
-- `src/query.ts:442` 调用 feature-gated `contextCollapse.applyCollapsesIfNeeded()`。
-- `src/query.ts:455` 调用 `deps.autocompact()`。
-- `src/query.ts:528` 到 `src/query.ts:535` 将 autocompact 结果转成 post-compact messages。
-- `src/query.ts:659` 到 `src/query.ts:660` 调 provider 前执行 `prependUserContext(messagesForQuery, userContext)`。
-- `src/services/api/claude.ts:1266` 执行 `normalizeMessagesForAPI(messages, filteredTools)`。
-
-## 1. 全局心智模型
-
-### 1.1 三个不要混淆的视图
-
-| 视图 | 源码对应 | 生命周期 | 谁使用 | 不应该做什么 |
-|---|---|---|---|---|
-| `transcript` | `State.messages`、`QueryEngine.mutableMessages`、session JSONL | 持久或跨轮 | UI、resume、审计、下一轮投影 | 不应直接发给 provider |
-| `messagesForQuery` | `src/query.ts` 局部变量 | 单次 loop iteration | tool runtime、compact、stop hooks、下一轮 state 构造 | 不应当成最终 provider request |
-| `messagesForAPI` | `normalizeMessagesForAPI()` 输出 | 单次 provider request | Anthropic/Bedrock/Vertex/Foundry 等 API | 不应反写为唯一 transcript |
-
-最容易错的是把 `messagesForQuery` 叫作“最终上下文”。它仍然可能包含 attachment、内部 system、progress 过滤前形态、连续 user messages、未修复的 tool pairing 等结构。真正 provider request 还要经过 `normalizeMessagesForAPI()` 和 provider-specific post-processing。
-
-### 1.2 Key Terms
-
-| 术语 | 含义 |
-|---|---|
-| durable transcript | 会话事实源。可以包含 UI-only、system boundary、attachment、progress、compact metadata 等内部消息。 |
-| projection | 读时生成的临时视图，不等同于删除历史。 |
-| compact boundary | 手动或自动 compact 后写入的 system marker，用来切断旧 transcript 前缀。 |
-| tool result budget | 在投影层把大 tool result 替换为稳定 preview，避免单条 wire user message 超预算。 |
-| snip | feature-gated 历史中段裁剪机制。当前镜像可确认调用位置和恢复边界，不能确认算法。 |
-| microcompact | 对工具结果等可压缩内容做轻量压缩或 cache editing，通常早于 autocompact。 |
-| context collapse | feature-gated 读时折叠机制。目标是用摘要占位替换部分历史，避免触发完整 autocompact。 |
-| autocompact | 达到阈值后调用 summarizer，生成 compact boundary、summary messages、保留尾部和恢复 attachments。 |
-| provider normalization | 把内部 `Message[]` 变成 provider 可接受的 `(UserMessage | AssistantMessage)[]`。 |
-
-### 1.3 常见失败模式
-
-| 失败模式 | 现象 | 修正方向 |
-|---|---|---|
-| 直接发送 transcript | compact 前历史和 summary 同时进入模型，token 暴涨或语义冲突 | 每轮先通过 projection 生成 `messagesForQuery` |
-| 把 UI scrollback 当模型窗口 | 用户看到的历史与模型实际可见内容不一致，调试误判 | UI 和 API view 分离，`/context` 显示 API view |
-| 在存储层永久改写 provider request | resume、审计、UI、compact metadata 丢失 | 投影是 read-time view，只把必要 boundary/summary 作为事件写回 |
-| 大工具结果按内部消息逐条预算 | 多个 user messages 到 API 层被合并后仍超限 | 按 `normalizeMessagesForAPI()` 的合并规则分组预算 |
-| compact 切断 tool_use/tool_result pair | provider 400，或者模型看见无配对工具结果 | projection 和 compact 必须维护 API invariants |
-| snip 删除 JSONL 中段但不 relink | resume 后 parent chain 断裂或旧历史复活 | boundary 记录 removed UUIDs，恢复时删除并 relink |
-| 只做 `messagesForQuery` 不做 provider normalization | progress/system/virtual/unsupported blocks 泄漏到 API | provider boundary 前统一 normalize 和 pairing 修复 |
-
-## 2. Execution Flow：一次模型调用前后发生什么
-
-### 2.1 loop state 到 iteration scratch
-
-`src/query.ts` 把状态分成两层：
-
-- `QueryParams`：本次 `query()` 的入口参数，见 `src/query.ts:181`。
-- `State`：`queryLoop()` 跨 iteration 携带的可变状态，见 `src/query.ts:207`。
-
-每次 `while(true)` 顶部从 `state` 解构当前 iteration 要用的字段。随后创建局部 `messagesForQuery`、`assistantMessages`、`toolResults`、`toolUseBlocks`、`needsFollowUp` 等 scratch 状态。
-
-源码确认：
-
-- `src/query.ts:263` 使用 `productionDeps()` 或测试注入 deps。
-- `src/query.ts:302` 启动 relevant memory prefetch 时读取 `state.messages`。
-- `src/query.ts:365` 创建 `messagesForQuery`。
-- `src/query.ts:551` 到 `src/query.ts:558` 创建本轮 assistant/tool scratch。
-
-### 2.2 投影 pipeline 顺序
-
-| 顺序 | 源码位置 | 输入 | 输出 | 作用 |
+| 顺序 | 方法 | 输入 | 输出 | 核心职责 |
 |---:|---|---|---|---|
-| 1 | `src/query.ts:365` | `messages` | compact slice | 从最后一个 compact boundary 开始取消息；默认还会过滤 snip removed messages |
-| 2 | `src/query.ts:379` | compact slice | budgeted messages | 替换过大的 tool result 内容 |
-| 3 | `src/query.ts:403` | budgeted messages | snipped messages | feature-gated，snip 在 microcompact 前运行 |
-| 4 | `src/query.ts:415` | snipped messages | microcompacted messages | 轻量 compact 或 cache editing |
-| 5 | `src/query.ts:442` | microcompacted messages | collapsed view | feature-gated，context collapse 在 autocompact 前运行 |
-| 6 | `src/query.ts:455` | collapsed view | optional compaction result | 判断是否触发 autocompact |
-| 7 | `src/query.ts:528` | compaction result | post-compact messages | 成功 compact 后替换本轮内部投影视图 |
-| 8 | `src/query.ts:548` | final `messagesForQuery` | `toolUseContext.messages` | 工具运行上下文看到本轮投影 |
-| 9 | `src/query.ts:660` | `messagesForQuery` + `userContext` | provider input messages | 添加 meta user context reminder |
-| 10 | `src/services/api/claude.ts:1266` | provider input messages | `messagesForAPI` | provider normalization |
+| 1 | `getMessagesAfterCompactBoundary()` | 当前 `messages` | compact/snip 后的 active history | 找最后一个 compact boundary，并默认应用 snip projection |
+| 2 | `applyToolResultBudget()` | active history + replacement state | 替换过大 tool_result 后的 messages | 按 provider wire-level user message 控制工具结果体积，并冻结替换决策 |
+| 3 | `snipCompactIfNeeded()` | budgeted messages | snipped messages + freed token estimate + optional boundary | feature-gated 历史裁剪；当前只能确认调用契约 |
+| 4 | `microcompact()` / `microcompactMessages()` | snipped messages | 直接清理后的 messages，或 cache-edits metadata | 轻量处理旧工具结果；可能改消息，也可能只排队 API cache edits |
+| 5 | `contextCollapse.applyCollapsesIfNeeded()` | microcompacted messages | collapsed view | feature-gated 读时折叠；当前只能确认调用契约 |
+| 6 | `autocompact()` / `autoCompactIfNeeded()` | collapsed view + runtime context | optional `CompactionResult` | 判断是否达到完整压缩阈值，并执行 session memory 或 summary compact |
+| 7 | `buildPostCompactMessages()` | `CompactionResult` | post-compact messages | 定义 compact 结果进入下一轮窗口的顺序协议 |
+| 8 | `prependUserContext()` | final `messagesForQuery` + `userContext` | request messages | 把动态用户上下文注入为 meta user reminder |
 
-### 2.3 ASCII sequence
+### 0.2 这条链不是“每步都删除消息”
+
+这些方法对状态的影响不一样：
+
+| 方法 | 是否返回新 messages | 是否持久化事件 | 是否修改共享状态 | 是否只影响 provider request |
+|---|---:|---:|---:|---:|
+| `getMessagesAfterCompactBoundary()` | 是，切片或投影 | 否 | 否 | 否 |
+| `applyToolResultBudget()` | 可能 | 可通过 callback 写 replacement record | 会 mutate `ContentReplacementState` | 否 |
+| `snipCompactIfNeeded()` | 可能 | 可能 yield boundary | 具体实现待验证 | 否 |
+| `microcompactMessages()` time-based | 是，直接替换 tool_result content | 否 | 会 reset cached MC state | 否 |
+| `microcompactMessages()` cached | messages 不变 | boundary 延后 yield | 会更新 module-level cached MC state | 是，排队 cache_edits |
+| `contextCollapse.applyCollapsesIfNeeded()` | 是，读时 collapsed view | 当前调用点不 yield | 使用 collapse store，细节待验证 | 否 |
+| `autoCompactIfNeeded()` | 不直接返回 messages；返回 `CompactionResult` | compact 成功后 yield post-compact messages | 清理多类 cache/tracking | 否 |
+| `buildPostCompactMessages()` | 是，纯组装 | 否 | 否 | 否 |
+| `prependUserContext()` | 是，前置 meta user message | 否 | 否 | 是，请求级注入 |
+
+### 0.3 方法顺序的关键依赖
 
 ```text
-queryLoop iteration
-  |
-  | state.messages
-  v
-getMessagesAfterCompactBoundary()
-  |
-  v
-applyToolResultBudget()
-  |
-  v
-snipCompactIfNeeded()?          [feature-gated]
-  |
-  v
-microcompactMessages()
-  |
-  v
-contextCollapse.project/apply()? [feature-gated]
-  |
-  v
-autoCompactIfNeeded()
-  |             \
-  | no compact   \ compacted
-  |               v
-  |          buildPostCompactMessages()
-  v
-messagesForQuery
-  |
-  +--> toolUseContext.messages
-  |
-  v
-prependUserContext()
-  |
-  v
-queryModelWithStreaming()
-  |
-  v
-normalizeMessagesForAPI()
-  |
-  v
-provider request
+compact boundary
+  -> tool result budget
+       -> snip
+            -> microcompact
+                 -> context collapse
+                      -> autocompact
+                           -> post-compact messages
+                                -> user context prepend
 ```
 
-### 2.4 工具执行后的下一轮 state
+顺序不是随意的：
 
-如果模型没有请求工具，`queryLoop()` 进入 stop hooks、token budget 等收尾路径后返回。若模型请求工具，则执行工具，收集 `toolResults` 和 mid-turn attachments，然后构造下一轮 `State`：
+- compact boundary 必须最早，因为旧 compact 前历史不应该参与后续预算和压缩判断。
+- tool result budget 必须早于 cached microcompact，因为 cached microcompact 只按 `tool_use_id` 操作，不检查内容；先替换内容不会破坏它。
+- snip 早于 microcompact，且 `tokensFreed` 要传给 autocompact，修正 stale usage。
+- context collapse 早于 autocompact，因为它如果已把上下文降到阈值下，就避免完整 summary compact。
+- autocompact 成功后必须用 `buildPostCompactMessages()` 替换当前窗口，而不是继续用旧窗口。
+- `prependUserContext()` 放最后，因为它是本次请求级 meta reminder，不是 durable transcript 的 active history 切片。
 
-```text
-next.messages = [
-  ...messagesForQuery,
-  ...assistantMessages,
-  ...toolResults,
-]
+## 1. 总执行位置：这些方法在哪里串起来
+
+源码主入口在 `src/query.ts` 的 `queryLoop()`。
+
+关键片段可以抽象为：
+
+```ts
+let messagesForQuery = [...getMessagesAfterCompactBoundary(messages)]
+
+messagesForQuery = await applyToolResultBudget(...)
+
+const snipResult = snipCompactIfNeeded(messagesForQuery)
+messagesForQuery = snipResult.messages
+snipTokensFreed = snipResult.tokensFreed
+
+const microcompactResult = await microcompact(messagesForQuery, ...)
+messagesForQuery = microcompactResult.messages
+pendingCacheEdits = microcompactResult.compactionInfo?.pendingCacheEdits
+
+const collapseResult = await contextCollapse.applyCollapsesIfNeeded(...)
+messagesForQuery = collapseResult.messages
+
+const { compactionResult } = await autocompact(..., snipTokensFreed)
+if (compactionResult) {
+  messagesForQuery = buildPostCompactMessages(compactionResult)
+}
+
+messages: prependUserContext(messagesForQuery, userContext)
 ```
 
 源码确认：
 
-- `src/query.ts:1396` 把工具 update message 通过 `normalizeMessagesForAPI([update.message], tools)` 转成 user-side tool result 加进 `toolResults`。
-- `src/query.ts:1585` 把 mid-turn attachments 基于 `messagesForQuery + assistantMessages + toolResults` 生成。
-- `src/query.ts:1716` 构造下一轮 `State.messages`。
+- `src/query.ts:365` 创建 `messagesForQuery`。
+- `src/query.ts:379` 调 `applyToolResultBudget()`。
+- `src/query.ts:403` 调 `snipCompactIfNeeded()`。
+- `src/query.ts:415` 调 `deps.microcompact()`。
+- `src/query.ts:441` 调 `contextCollapse.applyCollapsesIfNeeded()`。
+- `src/query.ts:455` 调 `deps.autocompact()`。
+- `src/query.ts:528` 调 `buildPostCompactMessages()`。
+- `src/query.ts:660` 调 provider 前执行 `prependUserContext()`。
 
-设计结论：
+## 2. `getMessagesAfterCompactBoundary()`：确定 active history 的第一刀
 
-```text
-下一轮事实源不是原始 transcript 简单 append，而是以上一轮投影窗口为基底，
-再追加本轮 assistant output 和工具/附件回填。
-```
-
-这保证 compact、snip、collapse 等投影结果在同一 `query()` 调用内继续生效，不会因为工具回填又把旧历史带回来。
-
-## 3. 数据协议：外部系统应该暴露什么接口
-
-### 3.1 推荐 API
-
-```ts
-type ProjectMessagesInput = {
-  transcript: AgentMessage[]
-  userContext: Record<string, string>
-  systemPrompt: SystemPromptBlock[]
-  systemContext: Record<string, string>
-  tools: ToolDefinition[]
-  runtime: AgentRuntimeContext
-  querySource: QuerySource
-  model: string
-}
-
-type ProjectionDiagnostics = {
-  sourceMessageCount: number
-  queryMessageCount: number
-  apiMessageCount: number
-  appliedTransforms: string[]
-  estimatedTokensBeforeProvider: number
-  snipTokensFreed?: number
-  compacted?: boolean
-  warnings: string[]
-}
-
-type ProjectMessagesOutput = {
-  internalWindow: AgentMessage[]      // Claude Code 的 messagesForQuery
-  providerMessages: ProviderMessage[] // Claude Code 的 messagesForAPI
-  systemPrompt: ProviderSystemPrompt
-  diagnostics: ProjectionDiagnostics
-}
-```
-
-### 3.2 Message 层级
-
-Claude Code 的 `Message` 类型定义文件在当前源码镜像中不可见，但调用点可以确认主要类别：
-
-- `user`：由 `createUserMessage()` 创建，包含 `message.role = "user"`、`content`、`isMeta`、`isVisibleInTranscriptOnly`、`isVirtual`、`uuid`、`timestamp` 等字段，见 `src/utils/messages.ts:460`。
-- `assistant`：由 `createAssistantMessage()` / `baseCreateAssistantMessage()` 创建，包含 provider message shape、`uuid`、`timestamp`、`requestId`、`isApiErrorMessage` 等字段，见 `src/utils/messages.ts:411`。
-- `attachment`：由 `createAttachmentMessage()` 创建，包含 typed `attachment`、`uuid`、`timestamp`，见 `src/utils/attachments.ts:3201`。
-- `system`：包括 compact boundary、microcompact boundary、api error、local command 等，`createCompactBoundaryMessage()` 位于 `src/utils/messages.ts:4530`，`createMicrocompactBoundaryMessage()` 位于 `src/utils/messages.ts:4557`。
-- `progress` / `stream_event` / `tombstone` / `tool_use_summary`：在 `query.ts`、`QueryEngine.ts` 和 UI 中作为内部状态或输出事件处理。
-
-设计要点：
-
-```text
-Message 是内部 transcript 事件，不等于 provider MessageParam。
-```
-
-`normalizeMessagesForAPI()` 只返回 `UserMessage | AssistantMessage`，这说明 attachment、progress、普通 system 等都不是 provider 原生消息。
-
-### 3.3 `isMeta` 的意义
-
-`createUserMessage()` 支持 `isMeta?: true`。源码中的 user context、很多 attachments、recovery prompt 都以 meta user message 注入。`shouldShowUserMessage()` 会在非 transcript 视图中过滤大多数 meta user message，见 `src/utils/messages.ts:4658`。
-
-`isMeta` 不是“不会发给模型”的意思。相反，很多 meta message 只是不展示给默认 UI，但会进入模型上下文。外部系统应把它理解为：
-
-```text
-这条 user message 来自系统/运行时注入，不是键盘用户直接输入。
-```
-
-## 4. 核心 transform 详解
-
-### 4.1 Compact Boundary Slice
-
-入口：
+### 源码入口
 
 - `src/utils/messages.ts:4611` `isCompactBoundaryMessage()`
-- `src/utils/messages.ts:4620` 左右 `findLastCompactBoundaryIndex()`
-- `src/utils/messages.ts:4635` 左右 `getMessagesAfterCompactBoundary()`
+- `src/utils/messages.ts:4620` `findLastCompactBoundaryIndex()`
+- `src/utils/messages.ts:4643` `getMessagesAfterCompactBoundary()`
 
-源码行为：
+### 输入输出
 
-```text
-boundaryIndex = findLastCompactBoundaryIndex(messages)
-sliced = boundaryIndex === -1 ? messages : messages.slice(boundaryIndex)
-if HISTORY_SNIP and !includeSnipped:
-    return projectSnippedView(sliced)
-return sliced
+```ts
+function getMessagesAfterCompactBoundary<T extends Message | NormalizedMessage>(
+  messages: T[],
+  options?: { includeSnipped?: boolean },
+): T[]
 ```
 
-设计含义：
+输入是当前 `messages`。输出是：
 
-- compact boundary 是投影层第一道切线。
-- boundary 本身留在 slice 中，但 provider normalization 会过滤普通 system message。
-- snip filtering 被合并在这个函数内，说明调用方通常想要“compact 后 + snip 后”的 active context。
+- 如果没有 compact boundary：原数组。
+- 如果有 compact boundary：从最后一个 boundary 开始到末尾的 slice。
+- 如果 `HISTORY_SNIP` 开启且没有 `includeSnipped`：再调用 `projectSnippedView()` 过滤 snipped messages。
 
-注意：`includeSnipped: true` 是 UI 特例，不是模型调用默认行为。
+### 内部步骤
 
-### 4.2 Tool Result Budget
+1. `findLastCompactBoundaryIndex()` 从尾到头扫描。
+2. 找到最后一个 `type === "system" && subtype === "compact_boundary"`。
+3. `boundaryIndex === -1` 时返回全部 messages。
+4. 否则返回 `messages.slice(boundaryIndex)`，注意包含 boundary 本身。
+5. 默认情况下，如果 `HISTORY_SNIP` feature 开启，会动态 require `snipProjection.js` 并执行 `projectSnippedView(sliced)`。
+6. 如果调用方显式传 `{ includeSnipped: true }`，则跳过 snip projection。
 
-入口：
+### 为什么 boundary 本身要保留
 
-- `src/query.ts:379` `applyToolResultBudget()`
-- `src/utils/toolResultStorage.ts` 中 `collectCandidatesByMessage()`、`partitionByPriorDecision()`、`selectFreshToReplace()`、`replaceToolResultContents()`
+源码注释说明：boundary 是 system message，最终会被 `normalizeMessagesForAPI()` 过滤。它留在 `messagesForQuery` 中不是为了发给模型，而是为了让内部状态、UI、resume 和后续处理知道“这是 compact 后的活跃区间起点”。
 
-源码确认：
+### 为什么 snip projection 放在这里
 
-- `query.ts` 注释说明它在 microcompact 前运行，因为 cached microcompact 只按 `tool_use_id` 操作，不检查内容。
-- `toolResultStorage.ts` 明确按照 `normalizeMessagesForAPI()` 的 wire-level 合并规则收集候选：连续 user messages 会在 provider 前合并，progress/attachment/system 不形成 wire boundary，只有新的 assistant message 通常形成边界。
-- replacement 决策分为 `mustReapply`、`frozen`、`fresh`，避免跨轮改变已缓存前缀。
-
-设计结论：
+`getMessagesAfterCompactBoundary()` 注释明确说：
 
 ```text
-工具结果预算必须按 provider 最终会看到的 user turn 分组，而不是按内部 Message[] 的物理条数分组。
+model-facing paths need both compact-slice AND snip-filter applied
 ```
 
-否则并行工具结果在内部看是多条 user message，到了 provider 变成一条巨大的 user message，预算会漏判。
+这说明 Claude Code 把 active history 定义成两个条件的组合：
 
-### 4.3 Snip
+```text
+最后一次 compact boundary 之后
+并且不包含 snip 已移除的中段消息
+```
 
-入口：
+### 重要调用差异
 
-- `src/query.ts:403` `snipCompactIfNeeded(messagesForQuery)`
+| 调用方 | 参数 | 语义 |
+|---|---|---|
+| `query.ts` | 默认 | 模型调用路径，应用 compact slice + snip filter |
+| `/compact` | 默认 | compact summarizer 不总结已 snip 的内容 |
+| UI `Messages.tsx` | `{ includeSnipped: true }` | UI scrollback 保留 snipped 内容 |
+
+### 方法级结论
+
+`getMessagesAfterCompactBoundary()` 不是普通 slice helper。它定义了“当前 active transcript”的第一层语义：最后一次 compact 之前的内容默认不再参与模型上下文；snip 已移除的内容默认也不进入模型路径。
+
+## 3. `applyToolResultBudget()`：按 provider wire 形态冻结大工具结果
+
+### 源码入口
+
+- `src/query.ts:379` 调用点。
+- `src/utils/toolResultStorage.ts:390` `ContentReplacementState`。
+- `src/utils/toolResultStorage.ts:924` `applyToolResultBudget()`。
+- `src/utils/toolResultStorage.ts:799` `enforceToolResultBudget()`。
+
+### 输入输出
+
+```ts
+async function applyToolResultBudget(
+  messages: Message[],
+  state: ContentReplacementState | undefined,
+  writeToTranscript?: (records: ToolResultReplacementRecord[]) => void,
+  skipToolNames?: ReadonlySet<string>,
+): Promise<Message[]>
+```
+
+输出是替换过部分 `tool_result.content` 的 `Message[]`，或者原 messages。
+
+如果 `state` 是 `undefined`，直接 no-op。这表示 feature 未启用或当前上下文不需要该预算机制。
+
+### 核心状态：`ContentReplacementState`
+
+```ts
+type ContentReplacementState = {
+  seenIds: Set<string>
+  replacements: Map<string, string>
+}
+```
+
+这两个字段是机制核心：
+
+- `seenIds`：某个 `tool_use_id` 已经经过预算决策。不管当时有没有替换，以后命运都冻结。
+- `replacements`：已经替换过的 `tool_use_id -> exact preview string`。以后每轮用同一个字符串 re-apply，不再读文件、不重新生成 preview。
+
+设计目标是 prompt cache 稳定：
+
+```text
+同一个 tool_result 第一次如果完整进入模型，以后不能突然变 preview；
+第一次如果变 preview，以后必须 byte-identical 地继续变同一个 preview。
+```
+
+### 内部步骤
+
+`applyToolResultBudget()` 本身只是薄包装：
+
+1. `state` 为空则返回原 messages。
+2. 调 `enforceToolResultBudget(messages, state, skipToolNames)`。
+3. 如果产生 `newlyReplaced`，调用 `writeToTranscript` 把 replacement record 写入 transcript。
+4. 返回 result messages。
+
+真正逻辑在 `enforceToolResultBudget()`：
+
+1. `collectCandidatesByMessage(messages)` 提取候选 tool_result，并按 API wire-level user message 分组。
+2. 如果需要跳过某些工具，先 `buildToolNameMap(messages)` 得到 `tool_use_id -> tool_name`。
+3. 读取 per-message budget limit。
+4. 对每个候选组执行 `partitionByPriorDecision()`：
+   - `mustReapply`：已有 replacement，直接放进 `replacementMap`。
+   - `frozen`：已 seen 但未 replacement，本轮不能再替换。
+   - `fresh`：从未见过，可以参与本轮预算决策。
+5. 对 fresh 结果：
+   - `skipToolNames` 命中的先加入 `seenIds`，但不计入 freshSize。
+   - 计算 `frozenSize + freshSize` 是否超过 limit。
+   - 超过时用 `selectFreshToReplace()` 按 size 从大到小选择要替换的 fresh results。
+6. 未被选中替换的 candidate 同步加入 `seenIds`。
+7. 被选中的 candidate 异步 `persistToolResult()`，成功后生成 preview 字符串。
+8. 成功 replacement：
+   - 加入 `replacementMap`。
+   - 写入 `state.replacements`。
+   - 记录 `newlyReplaced`，供 transcript 持久化。
+9. 最后用 `replaceToolResultContents()` 返回新 messages。
+
+### 为什么要按 API-level user message 分组
+
+这是这个方法最容易被误解的地方。
+
+源码注释说明，`normalizeMessagesForAPI()` 会合并连续 user messages；progress、attachment、普通 system 不会形成 provider wire boundary。因此内部多个 user/tool_result messages 到 API 层可能合并成一个 user turn。
+
+所以预算不能按内部 `Message[]` 的物理条数计算，而要模拟 provider 最终会看到的分组：
+
+```text
+assistant boundary 之前的一组 user/tool_result
+  -> API 上可能是一个 user message
+  -> budget 必须按这一组总大小算
+```
+
+否则并行工具调用产生多个看似“每条都没超限”的 tool_result，到了 provider 层合并后仍然超大。
+
+### 为什么只替换 fresh，不替换 frozen
+
+如果一个 tool_result 在上一轮完整进入过模型，那么下一轮突然替换成 preview，会改变历史 prefix，导致 prompt cache 失效，也会改变模型可见事实。因此 Claude Code 把未替换的 seen result 视为 frozen：即使后续总量超预算，也不再替换它，而是等待 microcompact 或 compact 处理。
+
+### persistence 失败时怎么处理
+
+`buildReplacement()` 如果 persist 失败返回 `null`。但 `enforceToolResultBudget()` 仍会把 candidate 加入 `seenIds`，只是不写 `replacements`。
+
+这意味着：
+
+```text
+持久化失败后，原始内容本轮已经发给模型；
+之后必须把它视为 seen-but-unreplaced，不能下一轮又尝试替换。
+```
+
+这也是 prompt cache 稳定性约束。
+
+### skipToolNames 的作用
+
+`query.ts` 传入的 `skipToolNames` 来自：
+
+```ts
+toolUseContext.options.tools
+  .filter(t => !Number.isFinite(t.maxResultSizeChars))
+  .map(t => t.name)
+```
+
+这类工具，例如 Read，自己有结果大小协议，不应该由 aggregate budget wrapper 再替换。被 skip 的结果会标记 seen，从而冻结“永不由这个机制替换”的决策。
+
+### 方法级结论
+
+`applyToolResultBudget()` 不是简单截断工具输出。它是一个跨轮稳定的、按 provider wire 分组的 tool_result replacement protocol。它的核心不是“省 token”，而是“在省 token 的同时不破坏 prompt cache 和历史一致性”。
+
+## 4. `snipCompactIfNeeded()`：feature-gated 中段裁剪的调用契约
+
+### 源码入口
+
+当前源码镜像没有 `src/services/compact/snipCompact.ts` 和 `src/services/compact/snipProjection.ts` 文件实体。可见调用点包括：
+
+- `src/query.ts:403` `snipModule!.snipCompactIfNeeded(messagesForQuery)`
+- `src/QueryEngine.ts:1281` `snipCompactIfNeeded(store, { force: true })`
 - `src/utils/messages.ts:4650` `projectSnippedView(sliced)`
-- `src/QueryEngine.ts:1278` `snipReplay`
 - `src/utils/sessionStorage.ts:1962` 附近 `applySnipRemovals()`
 
-源码确认：
+### 可确认输入输出
 
-- snip 在 microcompact 前执行。
-- `snipTokensFreed` 被传给 autocompact 和 blocking limit 判断，因为 surviving assistant 的 usage 仍可能反映 pre-snip context，`tokenCountWithEstimation()` 看不到 snip 节省。
-- SDK/headless `QueryEngine` 对 snip boundary 走 replay：如果 yield 的 system message 是 snip boundary，就对 `mutableMessages` 重新执行 `snipCompactIfNeeded(store, { force: true })`，避免 marker 每轮重复触发和内存不收敛。
-- session resume 会根据 snip boundary 中的 `removedUuids` 删除 JSONL 中仍存在的消息，并 relink dangling `parentUuid`。
-
-待验证：
-
-- 当前源码镜像没有 `src/services/compact/snipCompact.ts` 和 `src/services/compact/snipProjection.ts` 文件实体，所以不能确认 snip 如何选择裁剪范围、boundary message 具体 subtype 和 marker 协议。
-
-外部系统可先复现边界协议：
+从调用点可推断返回值至少包含：
 
 ```ts
-type SnipBoundary = {
-  kind: "snip_boundary"
-  removedMessageIds: string[]
-  tokensFreedEstimate: number
+type SnipResult = {
+  messages: Message[]
+  tokensFreed: number
+  boundaryMessage?: Message
 }
 ```
 
-关键不是先实现复杂选择算法，而是保证：
+`query.ts` 对它的消费方式：
 
-- active context 投影会过滤 removed IDs。
-- durable transcript 仍能审计 boundary。
-- resume 会 replay removal 并 relink parent chain。
-- token threshold 使用 adjusted token estimate。
+1. 用 `snipResult.messages` 替换 `messagesForQuery`。
+2. 把 `snipResult.tokensFreed` 保存为 `snipTokensFreed`。
+3. 如果有 `boundaryMessage`，就 `yield` 该 system message。
 
-### 4.4 Microcompact
+### 为什么 snip 在 microcompact 前
 
-入口：
-
-- `src/query.ts:415` `deps.microcompact(messagesForQuery, toolUseContext, querySource)`
-- `src/services/compact/microCompact.ts:253` `microcompactMessages()`
-
-源码确认：
-
-- time-based microcompact 先执行；如果最后一个 main-loop assistant 距今超过配置阈值，说明 server cache 可能已经冷却，于是直接清理旧工具结果内容。
-- cached microcompact 只在支持模型和 main thread source 下启用，使用 cache editing API 删除工具结果而不改本地 message content。
-- 如果这些路径都不适用，当前 legacy microcompact 已移除，返回原 messages。
-
-设计结论：
+源码注释明确：
 
 ```text
-microcompact 是“轻量降上下文压力”的阶段，不必总是修改 transcript；
-它可能只生成 API 层 cache edit 信息，也可能直接替换旧 tool_result 内容。
+Apply snip before microcompact (both may run — they are not mutually exclusive).
 ```
 
-### 4.5 Context Collapse
+这说明 snip 与 microcompact 不是二选一。snip 先减少 active history，再让 microcompact 处理剩余窗口里的工具结果/cache edits。
 
-入口：
+### 为什么 `tokensFreed` 要继续传给 autocompact
 
-- `src/query.ts:442` `contextCollapse.applyCollapsesIfNeeded()`
-- `/context` 中 `projectView()`：`src/commands/context/context.tsx`
+`query.ts` 注释说明 surviving assistant 的 usage 可能仍反映 pre-snip context，`tokenCountWithEstimation()` 读到的是 protected-tail assistant 的 usage，看不到 snip 已经释放的 tokens。
 
-源码确认：
+因此 `snipTokensFreed` 会传给：
 
-- context collapse 在 autocompact 前运行。
-- `query.ts` 注释说明，如果 collapse 已把上下文降到 autocompact 阈值下，就避免 autocompact 把粒度上下文替换为单一 summary。
-- collapse 是读时投影：summary messages 存在 collapse store，不直接塞进 REPL array；每次 `projectView()` 重放 commit log。
-- `src/commands/context/context.tsx` 的 `toApiView()` 也调用 `projectView()`，避免 `/context` 显示 raw history token 数。
+- `autoCompactIfNeeded(..., snipTokensFreed)`
+- blocking limit 判断中的 `tokenCountWithEstimation(messagesForQuery) - snipTokensFreed`
 
-待验证：
-
-- 当前源码镜像没有完整 `src/services/contextCollapse/*` 实体，只能确认调用顺序、读时投影性质和与 autocompact 的边界。
-
-### 4.6 Autocompact
-
-入口：
-
-- `src/query.ts:455` `deps.autocompact()`
-- `src/services/compact/autoCompact.ts:241` `autoCompactIfNeeded()`
-- `src/services/compact/compact.ts:330` `buildPostCompactMessages()`
-
-源码确认：
-
-- `shouldAutoCompact()` 会排除 `session_memory`、`compact` 等 querySource，避免压缩子任务死锁。
-- 如果 auto compact disabled、reactive-only mode 或 context collapse 接管上下文管理，则 proactive autocompact 不触发。
-- token 估算使用 `tokenCountWithEstimation(messages) - snipTokensFreed`。
-- 成功 compact 后优先尝试 session memory compaction；否则调用 `compactConversation()`。
-- `buildPostCompactMessages()` 输出顺序固定：`boundaryMarker, summaryMessages, messagesToKeep, attachments, hookResults`。
-
-设计结论：
+机制含义：
 
 ```text
-autocompact 是投影链中少数会产生可持久 boundary/summary 事件的阶段。
-它不是 provider normalization；它改变之后 loop 内继续使用的 internal window。
+snip 修改了消息窗口，但 token usage 估算源可能仍滞后；
+所以 snip 必须额外返回 freed-token delta，供后续阈值判断修正。
 ```
 
-## 5. Provider Projection：`messagesForQuery` 如何变成 `messagesForAPI`
+### boundaryMessage 的语义
 
-### 5.1 User Context 前置
+`query.ts` 只负责 yield boundary，不负责把它 replay 到 store。不同 host 的处理不一样：
 
-`src/utils/api.ts:449` 的 `prependUserContext()` 在非测试环境下把 `userContext` 渲染成一条 `isMeta: true` 的 user message，放到 messages 最前面。
+- REPL 保留完整历史用于 UI scrollback，通过 `projectSnippedView()` 在模型路径过滤。
+- SDK/headless `QueryEngine` 遇到 snip boundary 时，会对 `mutableMessages` 执行 force replay，删除 zombie messages 和 stale markers，避免长 session 内存泄漏。
 
-它的作用是把 CLAUDE.md、日期、项目上下文等动态信息作为 user-side reminder，而不是混入 system prompt。这使 system prompt 更稳定，动态上下文也更容易在投影层管理。
+### resume 语义
 
-### 5.2 Provider normalizer 入口
+`src/utils/sessionStorage.ts` 的 `applySnipRemovals()` 说明 snip 不像 compact boundary 那样删除前缀，而是删除中段。JSONL 是 append-only，因此 removed messages 仍在磁盘上。恢复时必须：
 
-`src/services/api/claude.ts:1266`：
+1. 从 snip boundary metadata 读 `removedUuids`。
+2. 从 message Map 中删除这些 UUID。
+3. 对 parentUuid 指向删除区域的 survivor 做 relink。
 
-```text
-messagesForAPI = normalizeMessagesForAPI(messages, filteredTools)
-```
+### 待验证
 
-随后 provider 层继续执行：
+当前不能确认：
 
-- 模型不支持 tool search 时，去掉 tool-search-only 字段。
-- `ensureToolResultPairing(messagesForAPI)` 修复 tool_use/tool_result mismatch。
-- `stripAdvisorBlocks()` 移除当前 beta 不支持的 advisor blocks。
-- `stripExcessMediaItems()` 限制媒体数量。
-- 可能注入 deferred tools 提示。
+- snip 如何选择裁剪范围。
+- boundary subtype 和 marker message 的精确 shape。
+- `tokensFreed` 如何估算。
+- `force: true` 如何改变执行条件。
 
-这说明 `messagesForQuery` 仍不是最终 provider request。
+### 方法级结论
 
-### 5.3 `normalizeMessagesForAPI()` 的主要转换
+在可见源码中，`snipCompactIfNeeded()` 的确定职责是：在 microcompact 前对 active history 做中段裁剪，并把“消息窗口变化”和“token 估算修正”同时返回。具体裁剪算法不可见，不能写成源码事实。
 
-入口：`src/utils/messages.ts:1989`
+## 5. `microcompact()` / `microcompactMessages()`：两种轻量压缩路径
 
-| 转换 | 源码行为 | 设计目的 |
-|---|---|---|
-| attachment reorder | `reorderAttachmentsForAPI()` 先把 attachment 调整到合适位置 | 避免附件破坏 tool result 批次 |
-| virtual filter | 过滤 `isVirtual` user/assistant | display-only message 不进 API |
-| system/progress/error filter | progress、普通 system、synthetic API error 不进 API | 保持 provider message 合法 |
-| local_command 转 user | local command output 变 user message | 模型可引用历史本地命令输出 |
-| user merge | 连续 user messages 合并 | 适配 Bedrock；也匹配一方 API 行为 |
-| tool_reference strip | 按 tool search 支持情况和可用工具过滤 | 避免不支持字段导致 provider 400 |
-| assistant normalize | tool_use input 标准化，去掉 tool-search-only 字段 | 防止 stale session 字段污染新模型 |
-| assistant merge | 同 `message.id` 的 assistant fragments 合并 | streaming 拆块后恢复同一 assistant response |
-| thinking cleanup | 过滤 orphan/trailing thinking | 避免 thinking signature 相关 API 错误 |
-| empty content repair | 确保 assistant 非空 | 避免 provider 拒绝空 assistant |
-| media validate | 校验 image size | 提前发现不可发送内容 |
-| snip id tag | HISTORY_SNIP 开启时给 user message 加 `[id:]` tag | 让模型可以引用 message id 进行 snip |
+### 源码入口
 
-设计结论：
+- `src/query.ts:415` 调 `deps.microcompact()`。
+- `src/query/deps.ts` 生产依赖把 `microcompact` 绑定到 `microcompactMessages()`。
+- `src/services/compact/microCompact.ts:253` `microcompactMessages()`。
 
-```text
-Provider normalizer 是 MessageProjection 的第二级，不是简单 serializer。
-它同时承担协议合法性、模型能力差异、恢复兼容和缓存稳定性。
-```
-
-## 6. 投影层与恢复路径
-
-### 6.1 Prompt-too-long 和 reactive retry
-
-如果 provider 返回 prompt-too-long，`query.ts` 在 `needsFollowUp === false` 分支中处理：
-
-- context collapse 可先 drain staged collapse，再重试。
-- reactive compact 可尝试总结后重试。
-- 如果恢复失败，才 yield withheld error 并返回。
-
-源码位置集中在 `src/query.ts:1062` 之后。
-
-设计含义：
-
-```text
-Projection 不只是请求前预算，还参与请求失败后的恢复决策。
-```
-
-外部系统应把 413/PTL 视作投影层可处理的反馈，而不是直接把错误交给用户。
-
-### 6.2 Max output tokens recovery
-
-当模型输出达到 max output limit 时，`query.ts` 会构造 meta user recovery message，让下一轮从中断处继续，而不是直接结束。这条 recovery message 被追加到：
-
-```text
-[
-  ...messagesForQuery,
-  ...assistantMessages,
-  recoveryMessage,
-]
-```
-
-这再次体现：下一轮基底是当前投影窗口，而不是 raw transcript。
-
-### 6.3 Stop hooks 和 token budget continuation
-
-stop hooks blocking errors、token budget continuation 都会构造新的 `State.messages`：
-
-```text
-messagesForQuery + assistantMessages + injected user/meta messages
-```
-
-这些路径说明 MessageProjection 是 loop state 的中轴：所有“继续生成”的原因最终都回到一个新的 projected state，而不是回到原始历史。
-
-## 7. UI、SDK、Resume 的差异边界
-
-### 7.1 `/context` 显示 API view
-
-`src/commands/context/context.tsx` 中的 `toApiView()` 先调用 `getMessagesAfterCompactBoundary()`，再 feature-gated 调用 `projectView()`。注释明确说明 `/context` 应显示模型实际看到的内容，而不是 REPL raw history。
-
-`src/commands/context/context-noninteractive.ts` 也走同样思路，`collectContextData()` 注释称它 mirror `query.ts` 的 pre-API transforms。
-
-设计结论：
-
-```text
-上下文可视化工具必须复用投影逻辑，否则用户看到的 token ledger 会误导调试。
-```
-
-### 7.2 UI 保留 scrollback，但模型过滤 snip
-
-`src/components/Messages.tsx` 中 UI 渲染使用 `getMessagesAfterCompactBoundary(normalizedMessages, { includeSnipped: true })`。注释说明 UI rendering 保留 snipped messages 用于 scrollback，避免把模型过滤策略误用到 UI。
-
-`src/components/Message.tsx` 对 snip boundary message 做特殊渲染，对 snip marker message 返回 `null`。
-
-设计结论：
-
-```text
-UI projection 与 model projection 不是同一个函数调用参数。
-```
-
-### 7.3 SDK / headless QueryEngine 的内存收敛
-
-`src/QueryEngine.ts` 的 `snipReplay` 注释说明：
-
-- REPL 保留完整历史用于 UI scrollback，并按需通过 `projectSnippedView` 投影。
-- `QueryEngine` 没有同样 UI 需求，因此遇到 snip boundary 时重放 snip，以删除 zombie messages 和 stale markers，限制长 SDK session 的内存增长。
-
-compact boundary 也类似：`QueryEngine` 在 yield compact boundary 给 SDK 后，会把 boundary 前消息从 `mutableMessages` 和局部 `messages` 中 splice 掉。
-
-设计结论：
-
-```text
-同一个投影事件在不同 host 中可以有不同物理内存策略，
-但对模型可见窗口必须保持一致。
-```
-
-### 7.4 Resume replay
-
-`src/utils/sessionStorage.ts` 的 `applySnipRemovals()` 解决 append-only JSONL 与 snip 中段删除之间的冲突：
-
-- boundary 记录 `removedUuids`。
-- resume 时从 Map 中删除这些 UUID。
-- surviving message 如果 parentUuid 指向删除区域，就沿 deleted parent links 找到第一个非删除 ancestor 并 relink。
-
-设计结论：
-
-```text
-持久化层不能只记录“当前投影视图”；它要记录足够的边界 metadata，
-让 resume 能重放投影效果并保持 conversation chain 连续。
-```
-
-## 8. 模块职责拆分
-
-| 模块 | 负责 | 不负责 |
-|---|---|---|
-| `TranscriptStore` | append-only 保存 Message events、boundary metadata、parent chain | 判断当前模型该看哪些消息 |
-| `MessageProjector` | 从 transcript 生成 `messagesForQuery`，执行 boundary/snip/budget/microcompact/collapse/autocompact | 直接构造 provider-specific JSON |
-| `ToolResultBudgeter` | 按 wire-level user group 替换大工具结果，并冻结替换决策 | 总结整段对话 |
-| `CompactService` | 生成 boundary、summary、messagesToKeep、恢复 attachments | 管 UI scrollback |
-| `ProviderNormalizer` | 过滤内部消息、合并 user/assistant、修复 tool pairing、清理 unsupported blocks | 修改 durable transcript |
-| `ContextLedger` | 展示 API view token 分类和预算 | 展示 raw transcript 作为模型上下文 |
-| `ResumeProjector` | 根据 compact/snip metadata 重放删除、relink、恢复 content replacement state | 发起新模型调用 |
-| `HostPolicyAdapter` | 决定 REPL、SDK、remote host 如何物理保留或释放历史 | 改变模型可见语义 |
-
-## 9. 外部系统最小实现
-
-### 9.1 MVP pipeline
+### 输入输出
 
 ```ts
-async function projectMessages(input: ProjectMessagesInput): Promise<ProjectMessagesOutput> {
-  const diagnostics: ProjectionDiagnostics = {
-    sourceMessageCount: input.transcript.length,
-    queryMessageCount: 0,
-    apiMessageCount: 0,
-    appliedTransforms: [],
-    estimatedTokensBeforeProvider: 0,
-    warnings: [],
+type MicrocompactResult = {
+  messages: Message[]
+  compactionInfo?: {
+    pendingCacheEdits?: PendingCacheEdits
   }
+}
+```
 
-  let internalWindow = getMessagesAfterLastCompactBoundary(input.transcript)
-  diagnostics.appliedTransforms.push("compact-boundary")
+`query.ts` 使用方式：
 
-  internalWindow = await applyToolResultBudget(internalWindow, input.runtime.contentReplacementState)
-  diagnostics.appliedTransforms.push("tool-result-budget")
+1. `messagesForQuery = microcompactResult.messages`
+2. 如果启用 cached microcompact，读取 `microcompactResult.compactionInfo?.pendingCacheEdits`
+3. pending cache edits 的 boundary message 延后到 API response 后生成
 
+### compactable tools
+
+`microCompact.ts` 定义 `COMPACTABLE_TOOLS`，包括：
+
+- FileRead
+- Shell 类工具
+- Grep、Glob
+- WebSearch、WebFetch
+- FileEdit、FileWrite
+
+`collectCompactableToolIds()` 扫描 assistant `tool_use` blocks，按 encounter order 收集这些工具的 `tool_use.id`。
+
+### 分支一：time-based microcompact
+
+`microcompactMessages()` 先调用 `maybeTimeBasedMicrocompact()`。如果触发，则直接返回，不再走 cached microcompact。
+
+触发条件来自 `evaluateTimeBasedTrigger()`：
+
+- time-based config enabled。
+- 必须有显式 `querySource`。
+- 必须是 main thread source。
+- 找得到最近 assistant message。
+- 当前时间与最近 assistant timestamp 的 gap 大于阈值。
+
+默认配置在 `src/services/compact/timeBasedMCConfig.ts`：
+
+```ts
+enabled: false
+gapThresholdMinutes: 60
+keepRecent: 5
+```
+
+触发后内部步骤：
+
+1. 收集 compactable tool ids。
+2. `keepRecent = Math.max(1, config.keepRecent)`，至少保留最近一个。
+3. 旧的 compactable tool ids 进入 `clearSet`。
+4. 遍历 user messages，找到 `tool_result.tool_use_id` 在 `clearSet` 的 block。
+5. 用 `TIME_BASED_MC_CLEARED_MESSAGE` 替换 block.content。
+6. 统计 `tokensSaved`。
+7. 如果确实清理了内容：
+   - log event。
+   - suppress compact warning。
+   - `resetMicrocompactState()`，避免 cached MC 状态引用已被内容清理的 server-side entries。
+   - prompt cache break detection 里调用 `notifyCacheDeletion(querySource)`。
+
+机制含义：
+
+```text
+time-based microcompact 认为 server prompt cache 已经过期，
+所以直接缩短即将重写的 prompt 内容，比保持 cache prefix 更重要。
+```
+
+### 分支二：cached microcompact
+
+如果 time-based 未触发，且 `CACHED_MICROCOMPACT` feature 开启，才可能走 cached path。
+
+触发条件：
+
+- cached MC runtime enabled。
+- model 支持 cache editing。
+- querySource 是 main thread source。
+
+cached path 内部步骤：
+
+1. lazy import `cachedMicrocompact.js`。
+2. `ensureCachedMCState()` 获取 module-level cached state。
+3. 收集 compactable tool ids。
+4. 遍历 user messages，注册仍未 registered 的 tool_result。
+5. `getToolResultsToDelete(state)` 决定要删除哪些 cached tool refs。
+6. 如果有要删的：
+   - `createCacheEditsBlock()` 创建 cache edits。
+   - 写入 module-level `pendingCacheEdits`。
+   - log event。
+   - suppress warning。
+   - prompt cache break detection 调 `notifyCacheDeletion()`。
+   - 捕获最近 assistant usage 里的 cumulative `cache_deleted_input_tokens` baseline。
+   - 返回原 messages，并在 `compactionInfo.pendingCacheEdits` 中携带 deleted ids 和 baseline。
+
+关键点：
+
+```text
+cached microcompact 不修改本地 messages。
+它通过 API 层插入 cache_edits/cache_reference 来删除服务器缓存中的工具结果。
+```
+
+### pending cache edits 如何进入 API
+
+`src/services/api/claude.ts` 会在构造请求前：
+
+- `consumePendingCacheEdits()` 一次性消费新 edits。
+- 读取 `getPinnedCacheEdits()`，把以前 pin 过的 edits 放回原位置。
+- 在 API messages 中把 new cache edits 插入最后一个 user message。
+- 调 `pinCacheEdits(i, newCacheEdits)`，保证未来请求在同一位置重发。
+
+这说明 cached microcompact 的一部分逻辑跨越了 `microCompact.ts` 和 provider request builder。
+
+### microcompact boundary 为什么延迟
+
+`query.ts` 在 API streaming 结束后，如果 `pendingCacheEdits` 存在，会读取最后一个 assistant usage 的 cumulative `cache_deleted_input_tokens`，减去 baseline，得到本次真实删除 token 数。只有 `deletedTokens > 0` 时才 yield `createMicrocompactBoundaryMessage()`。
+
+机制含义：
+
+```text
+cached microcompact 的 boundary 不是“客户端决定删除了几个工具”。
+它要等 API 返回真实 cache_deleted_input_tokens 后，才记录实际节省。
+```
+
+### 方法级结论
+
+`microcompactMessages()` 是轻量上下文压力释放层，但它有两种完全不同语义：
+
+- time-based：本地直接改 messages，清掉旧 tool_result 内容。
+- cached：本地 messages 不变，排队 API cache edits，等 response 后再生成 boundary。
+
+上一版只把它写成“轻量压缩”是不够的；真正机制是“根据 cache 是否还值得保留，选择内容清理或 cache editing”。
+
+## 6. `contextCollapse.applyCollapsesIfNeeded()`：autocompact 前的读时折叠契约
+
+### 源码入口
+
+当前源码镜像没有完整 `src/services/contextCollapse/*` 实体。可见调用点包括：
+
+- `src/query.ts:441` `contextCollapse.applyCollapsesIfNeeded()`
+- `src/query.ts:1095` 附近 `contextCollapse.recoverFromOverflow()`
+- `src/commands/context/context.tsx` `projectView()`
+- `src/services/compact/postCompactCleanup.ts` `resetContextCollapse()`
+
+### 可确认输入输出
+
+从 `query.ts` 可确认：
+
+```ts
+const collapseResult = await contextCollapse.applyCollapsesIfNeeded(
+  messagesForQuery,
+  toolUseContext,
+  querySource,
+)
+messagesForQuery = collapseResult.messages
+```
+
+返回值至少包含：
+
+```ts
+type CollapseResult = {
+  messages: Message[]
+}
+```
+
+### 为什么在 autocompact 前
+
+`query.ts` 注释直接说明：
+
+```text
+Runs BEFORE autocompact so that if collapse gets us under the
+autocompact threshold, autocompact is a no-op and we keep granular
+context instead of a single summary.
+```
+
+也就是说 collapse 是 autocompact 的前置替代策略：先尝试保留更细粒度的上下文结构；如果它足以降到阈值下，就不触发完整 summary compact。
+
+### 读时投影语义
+
+`query.ts` 注释还说明：
+
+- collapse view 是 read-time projection。
+- summary messages 存在 collapse store，不在 REPL array。
+- `projectView()` 每次 entry 重放 commit log。
+- 同一 turn 内，collapsed view 通过下一轮 `State.messages` 往前流。
+
+这与 compact boundary 不同：
+
+```text
+compact 会 yield boundary + summary messages；
+context collapse 在当前调用点不 yield，主要通过 projection store 改变本轮视图。
+```
+
+### overflow recovery
+
+当 API 返回 prompt-too-long 且错误被 withheld，`query.ts` 会先尝试：
+
+```ts
+contextCollapse.recoverFromOverflow(messagesForQuery, querySource)
+```
+
+如果 `drained.committed > 0`，则构造新的 `State`：
+
+```text
+messages = drained.messages
+transition = collapse_drain_retry
+```
+
+然后继续 loop。这说明 collapse 不只是请求前 projection，也参与 413 后恢复。
+
+### 清理边界
+
+`runPostCompactCleanup(querySource)` 在 main-thread compact 后会 `resetContextCollapse()`，但避免 subagent compact 清理 main thread 的 module-level collapse store。
+
+### 待验证
+
+当前不能确认：
+
+- span 如何选择。
+- summary 如何生成。
+- commit log 具体结构。
+- staged vs committed collapse 的阈值。
+- `recoverFromOverflow()` drain 策略。
+
+### 方法级结论
+
+`contextCollapse.applyCollapsesIfNeeded()` 在可见源码中的确定职责是：在完整 autocompact 前提供一个读时折叠视图，并在 prompt-too-long 恢复中优先于 reactive compact 尝试 drain。它的算法不可见，不能写成源码事实。
+
+## 7. `autocompact()` / `autoCompactIfNeeded()`：完整压缩的阈值和熔断
+
+### 源码入口
+
+- `src/query.ts:455` 调 `deps.autocompact()`。
+- `src/query/deps.ts` 生产依赖绑定 `autoCompactIfNeeded()`。
+- `src/services/compact/autoCompact.ts:160` `shouldAutoCompact()`。
+- `src/services/compact/autoCompact.ts:241` `autoCompactIfNeeded()`。
+
+### 输入输出
+
+```ts
+async function autoCompactIfNeeded(
+  messages: Message[],
+  toolUseContext: ToolUseContext,
+  cacheSafeParams: CacheSafeParams,
+  querySource?: QuerySource,
+  tracking?: AutoCompactTrackingState,
+  snipTokensFreed?: number,
+): Promise<{
+  wasCompacted: boolean
+  compactionResult?: CompactionResult
+  consecutiveFailures?: number
+}>
+```
+
+注意：`query.ts` 当前 destructure 的是 `{ compactionResult, consecutiveFailures }`。如果有 `compactionResult`，才会调用 `buildPostCompactMessages()` 替换 `messagesForQuery`。
+
+### 阈值计算
+
+`getEffectiveContextWindowSize(model)`：
+
+1. 读取模型 context window。
+2. 为 compact summary output 预留 token，最多 20,000。
+3. 支持 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 环境变量缩小窗口。
+
+`getAutoCompactThreshold(model)`：
+
+```text
+effectiveContextWindow - 13,000
+```
+
+也支持 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` 测试覆盖。
+
+`calculateTokenWarningState()` 同时计算：
+
+- warning threshold
+- error threshold
+- autocompact threshold
+- blocking limit
+
+### `shouldAutoCompact()` 的决策树
+
+`shouldAutoCompact()` 先排除不能 compact 的路径：
+
+1. `querySource === "session_memory"` 或 `"compact"` 返回 false，避免 forked agent deadlock。
+2. context collapse feature 下，如果 `querySource === "marble_origami"` 返回 false，避免 ctx-agent compact 后清理 main thread collapse store。
+3. `isAutoCompactEnabled()` false 返回 false。
+4. reactive-only feature 下 suppress proactive autocompact。
+5. context-collapse enabled 时 suppress proactive autocompact，因为 collapse 接管 headroom 管理。
+6. 最后才计算：
+
+```ts
+tokenCountWithEstimation(messages) - snipTokensFreed
+```
+
+然后用 `calculateTokenWarningState()` 判断是否超过 autocompact threshold。
+
+### 为什么要减 `snipTokensFreed`
+
+同 §4：snip 删除了消息，但 token usage 可能仍来自 surviving assistant 的旧 usage。`tokenCountWithEstimation()` 对新增消息做估算，但历史 usage 仍可能是 pre-snip。减去 `snipTokensFreed` 是为了不误触发 autocompact 或 blocking limit。
+
+### `autoCompactIfNeeded()` 的执行树
+
+1. 如果 `DISABLE_COMPACT`，返回不 compact。
+2. 如果 `tracking.consecutiveFailures >= 3`，返回不 compact。这个是 circuit breaker。
+3. 调 `shouldAutoCompact()`，未达阈值返回。
+4. 构造 `RecompactionInfo`：
+   - 是否已经在同一 compact chain 中。
+   - 距离上次 compact 几轮。
+   - previous compact turn id。
+   - 当前 threshold。
+   - querySource。
+5. 先尝试 `trySessionMemoryCompaction()`。
+6. 如果 session memory compaction 成功：
+   - `setLastSummarizedMessageId(undefined)`。
+   - `runPostCompactCleanup(querySource)`。
+   - prompt cache break detection 里 `notifyCompaction()`。
+   - `markPostCompaction()`。
+   - 返回 `compactionResult`。
+7. 如果 session memory compact 不成功，调用传统 `compactConversation()`：
+   - `suppressFollowUpQuestions = true`
+   - `customInstructions = undefined`
+   - `isAutoCompact = true`
+   - 传入 `recompactionInfo`
+8. 成功后同样 reset summary id、cleanup，并返回 `consecutiveFailures: 0`。
+9. 失败时：
+   - 非用户 abort 错误会 `logError()`。
+   - failure count +1。
+   - 达到 3 次会写 circuit breaker debug log。
+   - 返回 `{ wasCompacted: false, consecutiveFailures }`。
+
+### `query.ts` 如何消费失败计数
+
+如果没有 `compactionResult`，但 `consecutiveFailures !== undefined`，`query.ts` 会把这个值写回 `tracking`，让下一轮 `autoCompactIfNeeded()` 能触发 circuit breaker。
+
+### 方法级结论
+
+`autoCompactIfNeeded()` 不是简单“超过阈值就总结”。它包含：
+
+- 多个 querySource/feature gate 排除条件。
+- snip token correction。
+- session memory compaction 优先。
+- traditional summary compact fallback。
+- post-compact cleanup。
+- 连续失败熔断。
+
+这才是它作为 MessageProjection 末级压力释放阀的真实机制。
+
+## 8. `buildPostCompactMessages()`：compact 产物进入下一轮窗口的顺序协议
+
+### 源码入口
+
+- `src/services/compact/compact.ts:330` `buildPostCompactMessages()`
+- `src/query.ts:528` proactive autocompact 成功后调用。
+- `src/query.ts:1148` reactive compact 成功后也调用。
+
+### 输入输出
+
+```ts
+function buildPostCompactMessages(result: CompactionResult): Message[] {
+  return [
+    result.boundaryMarker,
+    ...result.summaryMessages,
+    ...(result.messagesToKeep ?? []),
+    ...result.attachments,
+    ...result.hookResults,
+  ]
+}
+```
+
+它是纯函数，但定义了 compact 后窗口的协议顺序。
+
+### `CompactionResult` 主要字段
+
+从 `src/services/compact/compact.ts` 可见：
+
+| 字段 | 含义 |
+|---|---|
+| `boundaryMarker` | compact boundary system message |
+| `summaryMessages` | compact summary user message，通常 `isCompactSummary` / transcript-only |
+| `messagesToKeep` | reactive/session-memory/partial compact 可能保留的尾部或部分消息 |
+| `attachments` | compact 后恢复文件、计划、skills、tool delta、MCP instructions 等 |
+| `hookResults` | SessionStart/PostCompact hooks 产生的消息 |
+
+### 为什么顺序重要
+
+这个顺序让后续 `getMessagesAfterCompactBoundary()` 的语义成立：
+
+```text
+boundary -> summary -> kept messages -> restored context attachments -> hook messages
+```
+
+如果 boundary 不在第一位，后续 compact slice 可能切错。
+
+如果 summary 不在 kept messages 前，模型会先看到尾部上下文再看到“旧历史摘要”，语义顺序会反直觉。
+
+如果 attachments/hookResults 不放在后面，compact 后恢复的文件、plan mode、invoked skills、deferred tools delta 等可能被 summary 淹没或顺序不稳定。
+
+### proactive 与 reactive 共用
+
+`query.ts` 在 proactive autocompact 和 reactive compact 成功后都调用它。这说明 compact 产物不论来源，都要归一成同一种 post-compact window 协议。
+
+### 方法级结论
+
+`buildPostCompactMessages()` 虽短，但它是 compact 结果的 ABI。外部系统复现时不要随意调整顺序；它决定 compact 后 active context 的可恢复性和后续投影一致性。
+
+## 9. `prependUserContext()`：把动态上下文注入为请求级 meta user message
+
+### 源码入口
+
+- `src/utils/api.ts:449` `prependUserContext()`
+- `src/query.ts:660` provider 调用前使用。
+
+### 输入输出
+
+```ts
+function prependUserContext(
+  messages: Message[],
+  context: { [k: string]: string },
+): Message[]
+```
+
+行为：
+
+1. `NODE_ENV === "test"` 时直接返回原 messages。
+2. `context` 为空时直接返回原 messages。
+3. 否则创建一条 `isMeta: true` user message，内容包在 `<system-reminder>` 里。
+4. 把该 meta user message 放到 messages 最前面。
+
+### 为什么不是 system prompt
+
+`prependUserContext()` 注入的是动态 user-side context，例如 CLAUDE.md、项目/运行时上下文等。它没有并入 `systemPrompt`，而是作为 meta user message 前置。
+
+这样做的效果：
+
+- system prompt 可以保持更稳定。
+- 动态上下文和真实用户输入都走 user message 协议，但通过 `isMeta` 区分来源。
+- `normalizeMessagesForAPI()` 后仍能作为 provider user context 发送。
+
+### 为什么放在 projection 链最后
+
+`userContext` 不参与：
+
+- compact boundary slice。
+- tool_result budget。
+- snip。
+- microcompact。
+- context collapse。
+- autocompact threshold 的 active history 处理。
+
+它只在本轮 provider request 前被注入。这避免动态 reminder 被写入 durable transcript 或被 compact/snip 当作历史消息处理。
+
+### 方法级结论
+
+`prependUserContext()` 是 MessageProjection 的最后一段请求级注入。它不改变会话历史事实源，只改变本轮发给 provider 的 messages 前缀。
+
+## 10. 方法之间的耦合点
+
+### 10.1 `applyToolResultBudget()` 与 `normalizeMessagesForAPI()`
+
+`applyToolResultBudget()` 必须知道 provider normalizer 会如何合并 user messages。它通过 `collectCandidatesByMessage()` 模拟 wire-level user group。否则预算判断会和最终 API request 不一致。
+
+### 10.2 `snipCompactIfNeeded()` 与 `autocompact()`
+
+snip 返回 `tokensFreed`，autocompact 和 blocking limit 都要减掉它。这个耦合不是可选优化，而是修正 stale usage 的必要补丁。
+
+### 10.3 `microcompact()` 与 provider request builder
+
+cached microcompact 不改 messages，而是通过 module-level `pendingCacheEdits` 让 `services/api/claude.ts` 插入 cache edits。它跨越 projection layer 和 provider layer。
+
+### 10.4 `contextCollapse` 与 autocompact
+
+context collapse 先运行，成功降压时 autocompact no-op。失败或 413 时，collapse 还有 `recoverFromOverflow()` 优先恢复路径。
+
+### 10.5 `autocompact()` 与 `buildPostCompactMessages()`
+
+autocompact 返回的是 `CompactionResult`，不是直接返回 messages。`query.ts` 统一通过 `buildPostCompactMessages()` 把它变成 active window，并 yield 每条 post-compact message。
+
+## 11. 外部系统最小复现骨架
+
+```ts
+async function projectMessagesForTurn(input: {
+  messages: Message[]
+  runtime: RuntimeContext
+  userContext: Record<string, string>
+  querySource: QuerySource
+}): Promise<{
+  messagesForQuery: Message[]
+  requestMessages: Message[]
+  pendingEvents: Message[]
+  diagnostics: ProjectionDiagnostics
+}> {
+  const pendingEvents: Message[] = []
+
+  let messagesForQuery = getMessagesAfterCompactBoundary(input.messages)
+
+  messagesForQuery = await applyToolResultBudget(
+    messagesForQuery,
+    input.runtime.contentReplacementState,
+    records => input.runtime.transcript.writeContentReplacements(records),
+    input.runtime.unboundedToolNames,
+  )
+
+  let snipTokensFreed = 0
   if (input.runtime.snipEnabled) {
-    const snip = projectSnippedView(internalWindow, input.runtime.snipState)
-    internalWindow = snip.messages
-    diagnostics.snipTokensFreed = snip.tokensFreed
-    diagnostics.appliedTransforms.push("snip")
+    const snip = snipCompactIfNeeded(messagesForQuery)
+    messagesForQuery = snip.messages
+    snipTokensFreed = snip.tokensFreed
+    if (snip.boundaryMessage) pendingEvents.push(snip.boundaryMessage)
   }
 
-  internalWindow = await microcompact(internalWindow, input.runtime, input.querySource)
-  diagnostics.appliedTransforms.push("microcompact")
+  const micro = await microcompactMessages(
+    messagesForQuery,
+    input.runtime.toolUseContext,
+    input.querySource,
+  )
+  messagesForQuery = micro.messages
+  input.runtime.pendingCacheEdits = micro.compactionInfo?.pendingCacheEdits
 
   if (input.runtime.contextCollapseEnabled) {
-    internalWindow = await projectCollapsedView(internalWindow, input.runtime.collapseStore)
-    diagnostics.appliedTransforms.push("context-collapse")
+    const collapsed = await applyCollapsesIfNeeded(
+      messagesForQuery,
+      input.runtime.toolUseContext,
+      input.querySource,
+    )
+    messagesForQuery = collapsed.messages
   }
 
-  const compact = await autoCompactIfNeeded({
-    messages: internalWindow,
-    runtime: input.runtime,
-    systemPrompt: input.systemPrompt,
-    userContext: input.userContext,
-    systemContext: input.systemContext,
-    querySource: input.querySource,
-    snipTokensFreed: diagnostics.snipTokensFreed ?? 0,
-  })
+  const compact = await autoCompactIfNeeded(
+    messagesForQuery,
+    input.runtime.toolUseContext,
+    input.runtime.cacheSafeParams(messagesForQuery),
+    input.querySource,
+    input.runtime.autoCompactTracking,
+    snipTokensFreed,
+  )
 
-  if (compact) {
-    internalWindow = buildPostCompactMessages(compact)
-    diagnostics.compacted = true
-    diagnostics.appliedTransforms.push("autocompact")
+  if (compact.compactionResult) {
+    messagesForQuery = buildPostCompactMessages(compact.compactionResult)
+    pendingEvents.push(...messagesForQuery)
+  } else if (compact.consecutiveFailures !== undefined) {
+    input.runtime.autoCompactTracking = {
+      ...input.runtime.autoCompactTracking,
+      consecutiveFailures: compact.consecutiveFailures,
+    }
   }
-
-  const withUserContext = prependUserContext(internalWindow, input.userContext)
-  const providerMessages = normalizeMessagesForProvider(withUserContext, input.tools, input.model)
-
-  diagnostics.queryMessageCount = internalWindow.length
-  diagnostics.apiMessageCount = providerMessages.length
-  diagnostics.estimatedTokensBeforeProvider = estimateTokens(internalWindow)
 
   return {
-    internalWindow,
-    providerMessages,
-    systemPrompt: appendSystemContext(input.systemPrompt, input.systemContext),
-    diagnostics,
+    messagesForQuery,
+    requestMessages: prependUserContext(messagesForQuery, input.userContext),
+    pendingEvents,
+    diagnostics: { snipTokensFreed },
   }
 }
 ```
 
-### 9.2 MVP 必须满足的 invariants
+## 12. 测试计划
 
-| Invariant | 为什么 |
+| 方法 | 测试重点 |
 |---|---|
-| compact boundary 前消息默认不进入 `internalWindow` | 防止 summary 和旧原文重复 |
-| tool_use 和 tool_result 不能被投影切断 | provider 协议要求配对 |
-| provider normalizer 不反写 transcript | 避免存储层丢失 UI/resume 信息 |
-| meta user message 可进模型但默认不进普通 UI | 区分系统注入和用户输入 |
-| UI context ledger 使用 API view | 用户调试时看到真实模型窗口 |
-| resume 能重放 snip/compact boundary | append-only transcript 与 active context 保持一致 |
+| `getMessagesAfterCompactBoundary()` | 最后一个 boundary 后切片；`includeSnipped` 开关；boundary 自身保留 |
+| `applyToolResultBudget()` | wire-level user grouping；fresh/frozen/mustReapply；persist failure；skipToolNames |
+| `snipCompactIfNeeded()` | mock 返回 messages/tokens/boundary 后 query 是否正确消费；`tokensFreed` 是否传给 autocompact |
+| `microcompactMessages()` time-based | gap threshold；keepRecent 最小为 1；旧 tool_result 被替换；cached MC state reset |
+| `microcompactMessages()` cached | messages 不变；pendingCacheEdits 产生；API 后 boundary 使用真实 deleted tokens |
+| `contextCollapse.applyCollapsesIfNeeded()` | mock collapsed messages 后 autocompact 是否基于 collapsed view 判断 |
+| `autoCompactIfNeeded()` | 禁用条件；querySource guard；contextCollapse 接管；snipTokensFreed；failure circuit breaker |
+| `buildPostCompactMessages()` | 输出顺序固定；messagesToKeep 为空时不插 undefined |
+| `prependUserContext()` | test env no-op；空 context no-op；非空 context 创建 `isMeta` user message |
 
-## 10. 测试计划
-
-### 10.1 单元测试
-
-| 测试 | 断言 |
-|---|---|
-| compact boundary slice | 最后一个 boundary 前的消息不进入 `messagesForQuery` |
-| boundary included but provider filtered | boundary 留在 internal window，`normalizeMessagesForAPI()` 后不出现普通 system |
-| user context prepend | 非空 userContext 生成 `isMeta: true` user message，空 context 不注入 |
-| tool result budget grouping | 多个内部 user tool results 在 wire-level 同组时按总大小预算 |
-| assistant same-id merge | 同一 `message.id` 的 assistant fragments 在 API 前合并 |
-| progress/system filter | progress 和普通 system 不进入 `messagesForAPI` |
-| attachment normalization | attachment 转为 user-side provider message，并与相邻 user 合并 |
-
-### 10.2 集成测试
-
-| 场景 | 断言 |
-|---|---|
-| 长工具输出后继续一轮 | 下一轮 request 中大 tool result 被稳定 preview 替换 |
-| 手动 compact 后继续 | request 只包含 boundary 后 summary/tail/attachments，不包含旧全文 |
-| autocompact 成功 | 当前 query 内后续请求使用 `buildPostCompactMessages()` 输出 |
-| tool call 后 follow-up | 下一轮 `State.messages` 是 `messagesForQuery + assistantMessages + toolResults` |
-| `/context` | 显示 compact/collapse/microcompact 后的 API view token，而不是 raw transcript |
-| SDK compact boundary | boundary 前 mutable history 被释放，但 SDK 仍收到 compact boundary event |
-
-### 10.3 Resume 测试
-
-| 场景 | 断言 |
-|---|---|
-| compact boundary resume | boundary 前未保留消息不会重新进入 active context |
-| snip boundary resume | removed UUIDs 被删除，survivor parentUuid 被 relink |
-| content replacement resume | 已替换 tool result 使用同一 preview，不重新采样 |
-| older snip boundary 缺 removedUuids | 标为兼容路径，不假装已过滤 |
-
-### 10.4 Provider compatibility 测试
-
-| 场景 | 断言 |
-|---|---|
-| Bedrock-style 连续 user | normalizer 合并连续 user messages |
-| tool search disabled | tool_reference 和 caller 等字段被清理 |
-| orphan tool_result | pairing repair 剥离或补 synthetic error |
-| trailing thinking | thinking-only orphan 不导致 provider 400 |
-| media 超量 | oldest media 被 strip 或提前报可恢复错误 |
-
-## 11. 部署层级
-
-| 阶段 | 必须实现 | 可以暂缓 |
-|---|---|---|
-| MVP | compact boundary slice、tool result budget、userContext prepend、provider normalizer、tool pairing repair、context ledger | snip、context collapse、cached microcompact |
-| Production | autocompact、post-compact restoration、resume replay、content replacement freeze、prompt-too-long recovery | session memory compact、cache editing |
-| Enterprise | host-specific retention policy、SDK/remote/replay 一致性、collapse/snippet audit、观测指标、跨 provider compatibility suite | 复杂自动 snip 策略可按需启用 |
-
-## 12. Verification
-
-本轮验证方式是静态源码追踪和文档自检：
-
-- 使用 `rg` 搜索 `MessageProjection|projection|snipProjection|messagesForQuery|normalizeMessagesForAPI`，确认当前镜像没有直接 `MessageProjection` 符号。
-- 阅读并交叉核对 `src/query.ts`、`src/QueryEngine.ts`、`src/utils/messages.ts`、`src/utils/api.ts`、`src/services/api/claude.ts`、`src/services/compact/*`、`src/utils/toolResultStorage.ts`、`src/utils/sessionStorage.ts`、`src/commands/context/*`、`src/components/Messages.tsx`。
-- 未运行 runtime 测试：仓库根目录当前没有 `package.json`，且 `snipCompact.ts`、`snipProjection.ts`、`contextCollapse` 相关实体文件在当前源码镜像中缺失，无法对这些 feature-gated 分支做端到端执行验证。
-
-## 13. 合理推断与待验证
+## 13. 源码确认、合理推断、待验证
 
 ### 13.1 源码确认
 
-- `MessageProjection` 不是当前源码镜像中的直接类名；源码用 `messagesForQuery` 表示本轮内部投影视图。
-- `queryLoop()` 每轮从 `getMessagesAfterCompactBoundary(messages)` 开始构造 `messagesForQuery`。
-- 投影顺序是 compact boundary、tool result budget、snip、microcompact、context collapse、autocompact。
-- autocompact 成功后，`buildPostCompactMessages()` 的输出会替换当前 `messagesForQuery`。
-- provider 调用前，`query.ts` 会把 `userContext` 通过 `prependUserContext()` 放到 request messages 前面。
-- provider 层会调用 `normalizeMessagesForAPI()`，随后执行 tool-search/model 能力清理、tool pairing repair、advisor/media stripping 等。
-- 工具执行后的下一轮 state 使用 `messagesForQuery + assistantMessages + toolResults`，而不是回到 raw transcript。
-- `/context` 命令显式复用 API view 逻辑，避免显示 raw history。
-- UI 可通过 `includeSnipped: true` 保留 snipped scrollback，而模型默认过滤。
-- session resume 通过 snip boundary metadata replay 中段删除并 relink parent chain。
+- `getMessagesAfterCompactBoundary()` 先找最后一个 compact boundary，再默认应用 snip projection。
+- `applyToolResultBudget()` 通过 `ContentReplacementState.seenIds/replacements` 保持跨轮替换决策稳定。
+- `applyToolResultBudget()` 按 provider wire-level user message 分组，而不是按内部 Message 物理条数分组。
+- `microcompactMessages()` 先尝试 time-based microcompact，命中后短路，不再走 cached microcompact。
+- time-based microcompact 会直接替换旧 `tool_result.content`，并 reset cached MC state。
+- cached microcompact 不修改本地 messages，而是生成 pending cache edits，由 provider request builder 插入 API messages。
+- cached microcompact boundary 延迟到 API response 后，用真实 `cache_deleted_input_tokens` delta 生成。
+- `shouldAutoCompact()` 会排除 compact/session_memory 等 querySource，并在 context collapse 接管时 suppress proactive autocompact。
+- `autoCompactIfNeeded()` 有连续失败熔断，默认 3 次后不再尝试。
+- `buildPostCompactMessages()` 固定输出 boundary、summary、kept messages、attachments、hook results。
+- `prependUserContext()` 在非测试、context 非空时创建 `isMeta: true` 的 system-reminder user message，并放到 messages 前面。
 
 ### 13.2 合理推断
 
-- Claude Code 的上下文工程核心是“读时投影 + provider normalization”，而不是单一 prompt 拼接器。
-- `messagesForQuery` 是 loop continuation 的事实基底，因此 compact/snip/collapse 的效果会在同一 `query()` 调用内继续生效。
-- prompt cache 稳定性是 tool result budget、microcompact、system/user context 分离的重要设计约束。
-- 外部系统若没有 `ContextLedger` 或 `/context` 等价能力，很难调试用户看到的历史与模型实际上下文之间的差异。
+- 这条链的主设计目标是“稳定 provider request prefix”，不是单纯压 token。
+- `applyToolResultBudget()` 的 frozen 规则说明 Claude Code 宁愿保留某些已见过的大结果，也不愿在后续轮次改变历史 prefix。
+- `contextCollapse` 的设计意图是保留比 autocompact summary 更细粒度的上下文；这是从调用顺序和注释推导出的。
 
 ### 13.3 待验证
 
-- `snipCompactIfNeeded()` 的具体裁剪策略、boundary subtype、marker 协议和 runtime enable 条件。
-- `projectSnippedView()` 的具体实现和 removed UUID 匹配策略。
-- `contextCollapse.applyCollapsesIfNeeded()` 的 span 选择、summary store、commit log 和 recovery 策略。
-- `reactiveCompact.tryReactiveCompact()` 的完整实现细节。
-- `src/types/message.js` 对应的 TypeScript 源文件在当前镜像中不可见，本文对 `Message` shape 的描述来自创建函数、mappers 和调用点，而非完整类型定义文件。
+- `snipCompactIfNeeded()` 的具体裁剪算法、boundary shape、marker shape、`tokensFreed` 估算方式。
+- `projectSnippedView()` 的具体过滤实现。
+- `contextCollapse.applyCollapsesIfNeeded()` 的 span 选择、summary store、commit log、drain 策略。
+- `cachedMicrocompact.js` 具体 `getToolResultsToDelete()` 和 `createCacheEditsBlock()` 算法，因为当前 `rg --files` 未发现该文件。
 
-## 附录 A：源码依据 / 设计来源校验
+## Verification
 
-| 结论 | 源码路径 | 关键符号或位置 |
+本轮只做静态源码验证：
+
+- 重新搜索八个方法的真实入口和调用点。
+- 阅读 `src/query.ts`、`src/utils/messages.ts`、`src/utils/toolResultStorage.ts`、`src/services/compact/microCompact.ts`、`src/services/compact/autoCompact.ts`、`src/services/compact/compact.ts`、`src/utils/api.ts`、`src/services/api/claude.ts`、`src/utils/sessionStorage.ts`、`src/services/compact/postCompactCleanup.ts`。
+- 未运行项目测试：仓库根目录没有 `package.json`，且若干 feature-gated 实体文件在当前源码镜像中不可见，不能做端到端执行验证。
+
+## 附录 A：源码依据
+
+| 方法/结论 | 源码路径 | 关键符号 |
 |---|---|---|
-| `query()` 和 `queryLoop()` 是主入口 | `src/query.ts` | `query()` at `:219`, `queryLoop()` at `:241` |
-| 入口参数包含 messages/system/user/tool context | `src/query.ts` | `QueryParams` at `:181` |
-| loop state 跨 iteration 携带 messages 等字段 | `src/query.ts` | `State` at `:207` |
-| 创建 `messagesForQuery` | `src/query.ts` | `getMessagesAfterCompactBoundary()` at `:365` |
-| 工具结果预算在 microcompact 前 | `src/query.ts`, `src/utils/toolResultStorage.ts` | `applyToolResultBudget()` at `src/query.ts:379` |
-| snip 在 microcompact 前 | `src/query.ts` | `snipCompactIfNeeded()` at `:403` |
-| microcompact | `src/query.ts`, `src/services/compact/microCompact.ts` | `deps.microcompact()` at `src/query.ts:415`, `microcompactMessages()` at `microCompact.ts:253` |
-| context collapse 在 autocompact 前 | `src/query.ts` | `applyCollapsesIfNeeded()` at `:442` |
-| autocompact | `src/query.ts`, `src/services/compact/autoCompact.ts` | `deps.autocompact()` at `src/query.ts:455`, `autoCompactIfNeeded()` at `autoCompact.ts:241` |
-| post-compact messages 顺序 | `src/services/compact/compact.ts` | `buildPostCompactMessages()` at `:330` |
-| user context 前置为 meta user message | `src/utils/api.ts` | `prependUserContext()` at `:449` |
-| provider normalization | `src/services/api/claude.ts`, `src/utils/messages.ts` | `normalizeMessagesForAPI()` at `claude.ts:1266`, function at `messages.ts:1989` |
-| tool result budget 按 wire user group | `src/utils/toolResultStorage.ts` | `collectCandidatesByMessage()` 注释和实现 |
-| `/context` 使用 API view | `src/commands/context/context.tsx`, `src/commands/context/context-noninteractive.ts` | `toApiView()`, `collectContextData()` |
-| UI 保留 snipped scrollback | `src/components/Messages.tsx` | `includeSnipped: true` |
-| QueryEngine 处理 snip/compact boundary | `src/QueryEngine.ts` | `snipReplay`, system switch, compact boundary splice |
-| snip resume replay | `src/utils/sessionStorage.ts` | `applySnipRemovals()` |
-| SDK/internal message mapping | `src/utils/messages/mappers.ts` | `toInternalMessages()`, `toSDKMessages()` |
-
-## 附录 B：和现有 context engineering 文档的关系
-
-`docs/wiki-source/cc/analysis/claude-code-context-engineering-technical-scheme.md` 已经从全局上下文工程角度覆盖了 system/user context、attachments、tool budget、compact、memory、skills 等主题。本文是其中“消息投影”链路的专题展开，边界更窄：
-
-- 那篇文档回答“Claude Code 的上下文工程整体怎么设计”。
-- 本文回答“每轮模型调用前，Message[] 到 provider request 的投影层怎么设计”。
-
-两者可以互相引用，但本文不替代全局上下文工程方案。
+| 投影链调用顺序 | `src/query.ts` | `queryLoop()`, `messagesForQuery` |
+| compact boundary slice | `src/utils/messages.ts` | `getMessagesAfterCompactBoundary()`, `findLastCompactBoundaryIndex()` |
+| tool result budget state | `src/utils/toolResultStorage.ts` | `ContentReplacementState`, `enforceToolResultBudget()` |
+| wire-level grouping | `src/utils/toolResultStorage.ts` | `collectCandidatesByMessage()` |
+| budget integration | `src/utils/toolResultStorage.ts` | `applyToolResultBudget()` |
+| microcompact 入口 | `src/services/compact/microCompact.ts` | `microcompactMessages()` |
+| time-based microcompact | `src/services/compact/microCompact.ts`, `src/services/compact/timeBasedMCConfig.ts` | `evaluateTimeBasedTrigger()`, `maybeTimeBasedMicrocompact()` |
+| cached microcompact state | `src/services/compact/microCompact.ts` | `consumePendingCacheEdits()`, `pinCacheEdits()`, `resetMicrocompactState()` |
+| cached edits provider injection | `src/services/api/claude.ts` | `consumePendingCacheEdits()`, `pinCacheEdits()` call sites |
+| autocompact threshold | `src/services/compact/autoCompact.ts` | `getEffectiveContextWindowSize()`, `getAutoCompactThreshold()` |
+| autocompact decision | `src/services/compact/autoCompact.ts` | `shouldAutoCompact()` |
+| autocompact execution | `src/services/compact/autoCompact.ts` | `autoCompactIfNeeded()` |
+| compact result order | `src/services/compact/compact.ts` | `buildPostCompactMessages()` |
+| compact conversation result | `src/services/compact/compact.ts` | `compactConversation()` |
+| post compact cleanup | `src/services/compact/postCompactCleanup.ts` | `runPostCompactCleanup()` |
+| user context prepend | `src/utils/api.ts` | `prependUserContext()` |
